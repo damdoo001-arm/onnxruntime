@@ -1,0 +1,141 @@
+{
+  "audited_at": "2026-08-14",
+  "pull_requests": [
+    {
+      "framework": "xnn",
+      "repository": "google/XNNPACK",
+      "number": 10986,
+      "title": "Damdoo01/int4 qc4w",
+      "url": "https://github.com/google/XNNPACK/pull/10986",
+      "state": "open",
+      "merged": false,
+      "draft": false,
+      "kernel_names": [
+        "kai_matmul_clamp_qai8_qai8_qsi4cxp8vsx4sf32bi32_1x64vs_sme2_dot",
+        "kai_matmul_clamp_qai8_qai8p8vsx4_qsi4cxp8vsx4sf32bi32_8vsx8vs_sme2_mopa",
+        "kai_rhs_pack_nxk_qsi4cxp8vsx4sf32bi32_qsi4cx_f32_i32_sme",
+        "kai_rhs_pack_nxk_qsi4cxp8vsx4sf32bi32_qsu4cx_f32_i32_sme"
+      ]
+    },
+    {
+      "framework": "xnn",
+      "repository": "google/XNNPACK",
+      "number": 10943,
+      "title": "Add KleidiAI Advanced SIMD PF16 6x32 GEMM kernel",
+      "url": "https://github.com/google/XNNPACK/pull/10943",
+      "state": "open",
+      "merged": false,
+      "draft": false,
+      "kernel_names": [
+        "kai_matmul_clamp_f16_f16_f16p32x1b_6x32_neon_mla",
+        "kai_matmul_clamp_f16_f16_f16p32x1b_6x32_neon_mla_cortexa55",
+        "kai_rhs_pack_kxn_x16p32x1b_x16_x16_neon",
+        "kai_rhs_pack_nxk_x16p32x1bx16_x16_x16_neon"
+      ]
+    },
+    {
+      "framework": "xnn",
+      "repository": "google/XNNPACK",
+      "number": 10877,
+      "title": "Introduced Packers/Matmul for QC2W weights and QP8 activations",
+      "url": "https://github.com/google/XNNPACK/pull/10877",
+      "state": "open",
+      "merged": false,
+      "draft": false,
+      "kernel_names": [
+        "kai_matmul_clamp_f32_qai8dxp1x4_qsu2cxp4vlx4_1x4vl_sme2_dot",
+        "kai_matmul_clamp_f32_qai8dxp1vlx4_qsu2cxp4vlx4_1vlx4vl_sme2_mopa",
+        "kai_rhs_pack_nxk_qsu2cxp4vlx4_qsu2cx_neon"
+      ]
+    },
+    {
+      "framework": "xnn",
+      "repository": "google/XNNPACK",
+      "number": 10686,
+      "title": "KFI-543 Integrate SME2 kernels matmul_clamp_f16_qai8dxp_qsi8cxp",
+      "url": "https://github.com/google/XNNPACK/pull/10686",
+      "state": "open",
+      "merged": false,
+      "draft": false,
+      "kernel_names": [
+        "kai_matmul_clamp_f16_qai8dxp1x4_qsi8cxp4vlx4_1x4vl_sme2_dot",
+        "kai_matmul_clamp_f16_qai8dxp1vlx4_qsi8cxp4vlx4_1vlx4vl_sme2_mopa",
+        "kai_lhs_quant_pack_qai8dxp_f16_neon"
+      ]
+    },
+    {
+      "framework": "ort",
+      "repository": "microsoft/onnxruntime",
+      "number": 31143,
+      "title": "[ARM] MLAS: route fp32 SGEMM to the KleidiAI SVE ukernel on SVE-only",
+      "url": "https://github.com/microsoft/onnxruntime/pull/31143",
+      "state": "open",
+      "merged": false,
+      "draft": true,
+      "kernel_names": [
+        "kai_matmul_clamp_f32_f32_f32p4vlx1b_6x4vl_sve_mla",
+        "kai_rhs_pack_kxn_x32p4vlx1b_x32_x32_sve"
+      ]
+    },
+    {
+      "framework": "ort",
+      "repository": "microsoft/onnxruntime",
+      "number": 29441,
+      "title": "[MLAS][KleidiAI] Integrate Depthwise 3x3 Conv Kernel",
+      "url": "https://github.com/microsoft/onnxruntime/pull/29441",
+      "state": "open",
+      "merged": false,
+      "draft": false,
+      "kernel_names": [
+        "kai_dwconv_clamp_f32_f32_f32p1vlx1b_3x3_s1_4xc_sme2_mla",
+        "kai_rhs_dwconv_pack_x32p1vlx1b_x32_x32_sme"
+      ]
+    },
+    {
+      "framework": "ort",
+      "repository": "microsoft/onnxruntime",
+      "number": 28745,
+      "title": "[MLAS] Integrate prototype decomposable QGEMM",
+      "url": "https://github.com/microsoft/onnxruntime/pull/28745",
+      "state": "open",
+      "merged": false,
+      "draft": true,
+      "kernel_names": [
+        "kai_matmul_i32_u8p4vsx4_u8p4vsx4_i32_i32_8vsx8vs_sme2_mopa",
+        "kai_matmul_clamp_f32_u8p4vsx4_u8p4vsx4_i32_i32_f32_f32_8vsx8vs_sme2_mopa",
+        "kai_matmul_pack_lhs_mxk_x8p4vsx4_x8_sme",
+        "kai_matmul_pack_rhs_kxn_x8p4vsx4_x8_sme"
+      ]
+    },
+    {
+      "framework": "ort",
+      "repository": "microsoft/onnxruntime",
+      "number": 27643,
+      "title": "[MLAS][Kleidiai] Sve Gemm and IMatmul Integration",
+      "url": "https://github.com/microsoft/onnxruntime/pull/27643",
+      "state": "open",
+      "merged": false,
+      "draft": true,
+      "kernel_names": [
+        "kai_imatmul_clamp_f32_f32_f32p4vlx1b_6x4vl_sve_mla",
+        "kai_matmul_clamp_f32_f32_f32p4vlx1b_6x4vl_sve_mla",
+        "kai_rhs_imatmul_pack_kxn_x32p4vlx1b_x32_x32_sve",
+        "kai_rhs_pack_kxn_x32p4vlx1b_x32_x32_sve"
+      ]
+    },
+    {
+      "framework": "ort",
+      "repository": "microsoft/onnxruntime",
+      "number": 26654,
+      "title": "ARM KleidiAI Micro-Kernel: Depthwise Convolution (3x3 kernel, Stride of 1)",
+      "url": "https://github.com/microsoft/onnxruntime/pull/26654",
+      "state": "open",
+      "merged": false,
+      "draft": false,
+      "kernel_names": [
+        "kai_dwconv_clamp_f32_f32_f32p1vlx1b_3x3_s1_4xc_sme2_mla",
+        "kai_rhs_dwconv_pack_x32p1vlx1b_x32_x32_sme"
+      ]
+    }
+  ]
+}
