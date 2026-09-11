@@ -1,12 +1,14 @@
-name: Preview KleidiAI compatibility
+name: Preview fork against the ONNX Runtime site
 
 on:
   push:
-    branches: ['damdoo01/kleidiai-pages-preview']
+    branches:
+      - main
+      - damdoo01/kleidiai-pages-preview
   workflow_dispatch:
     inputs:
-      onnxruntime_ref:
-        description: ONNX Runtime branch, tag, or commit to scan
+      candidate_ref:
+        description: Fork branch, tag, or commit to scan
         required: true
         default: main
         type: string
@@ -28,18 +30,29 @@ concurrency:
 jobs:
   build:
     if: github.repository == 'damdoo001-arm/onnxruntime'
+    env:
+      UPSTREAM_ARTIFACT_TOKEN: ${{ secrets.UPSTREAM_ARTIFACT_TOKEN }}
     runs-on: ubuntu-latest
     steps:
-      - name: Check out the ONNX Runtime website
+      - name: Check out preview automation
         uses: actions/checkout@v3
         with:
           persist-credentials: false
 
-      - name: Check out ONNX Runtime source
+      - name: Check out the upstream website baseline
         uses: actions/checkout@v3
         with:
           repository: microsoft/onnxruntime
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.onnxruntime_ref || 'main' }}
+          ref: gh-pages
+          path: .site
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out the candidate source from this fork
+        uses: actions/checkout@v3
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event_name == 'push' && github.ref_name == 'main' && github.sha || inputs.candidate_ref || 'main' }}
           path: .sources/onnxruntime
           fetch-depth: 1
           persist-credentials: false
@@ -63,9 +76,9 @@ jobs:
           KLEIDIAI_SOURCE_ROOT: ${{ github.workspace }}/.sources/kleidiai
           ONNXRUNTIME_SOURCE_ROOT: ${{ github.workspace }}/.sources/onnxruntime
           KLEIDIAI_PR_CANDIDATES: ${{ github.workspace }}/_tools/kleidiai_compatibility/open_kernel_prs.json
-          KLEIDIAI_PAGES_OUTPUT: ${{ github.workspace }}/docs/performance/kleidiai/index.html
+          KLEIDIAI_PAGES_OUTPUT: ${{ github.workspace }}/.site/docs/performance/kleidiai/index.html
           KLEIDIAI_STANDALONE_OUTPUT: ${{ runner.temp }}/kleidiai_onnxruntime_compatibility.html
-          KLEIDIAI_MARKDOWN_OUTPUT: ${{ github.workspace }}/docs/performance/kleidiai/README.md
+          KLEIDIAI_MARKDOWN_OUTPUT: ${{ github.workspace }}/.site/docs/performance/kleidiai/README.md
           KLEIDIAI_MARKDOWN_STANDALONE_OUTPUT: ${{ runner.temp }}/kleidiai_onnxruntime_compatibility.md
         run: |
           python _tools/kleidiai_compatibility/generate_ort_compatibility_html.py
@@ -74,7 +87,7 @@ jobs:
       - name: Validate the generated page
         run: >-
           python _tools/kleidiai_compatibility/validate_generated_page.py
-          docs/performance/kleidiai/index.html
+          .site/docs/performance/kleidiai/index.html
 
       - name: Remove temporary source checkouts
         run: rm -rf -- "$GITHUB_WORKSPACE/.sources"
@@ -89,24 +102,102 @@ jobs:
 
       - name: Install website dependencies
         run: npm install
+        working-directory: .site
 
       - name: Build documentation with Jekyll
         uses: actions/jekyll-build-pages@v1
         with:
-          source: ./
-          destination: ./_site
+          source: ./.site
+          destination: ./.site/_site
+
+      - name: Explain omitted generated API documentation
+        if: env.UPSTREAM_ARTIFACT_TOKEN == ''
+        run: >-
+          echo "::notice::UPSTREAM_ARTIFACT_TOKEN is not configured;
+          the themed documentation and landing site will be complete, but upstream generated API snapshots will be omitted."
+
+      - name: Download C API documentation
+        if: env.UPSTREAM_ARTIFACT_TOKEN != ''
+        uses: dawidd6/action-download-artifact@v2
+        with:
+          github_token: ${{ env.UPSTREAM_ARTIFACT_TOKEN }}
+          repo: microsoft/onnxruntime
+          workflow: publish-c-apidocs.yml
+          branch: main
+          name: onnxruntime-c-apidocs
+          path: .api-docs
+
+      - name: Download C# API documentation
+        if: env.UPSTREAM_ARTIFACT_TOKEN != ''
+        uses: dawidd6/action-download-artifact@v2
+        with:
+          github_token: ${{ env.UPSTREAM_ARTIFACT_TOKEN }}
+          repo: microsoft/onnxruntime
+          workflow: publish-csharp-apidocs.yml
+          branch: main
+          name: onnxruntime-csharp-apidocs
+          path: .api-docs
+
+      - name: Download Java API documentation
+        if: env.UPSTREAM_ARTIFACT_TOKEN != ''
+        uses: dawidd6/action-download-artifact@v2
+        with:
+          github_token: ${{ env.UPSTREAM_ARTIFACT_TOKEN }}
+          repo: microsoft/onnxruntime
+          workflow: publish-java-apidocs.yml
+          branch: main
+          name: onnxruntime-java-apidocs
+          path: .api-docs
+
+      - name: Download Python API documentation
+        if: env.UPSTREAM_ARTIFACT_TOKEN != ''
+        uses: dawidd6/action-download-artifact@v2
+        with:
+          github_token: ${{ env.UPSTREAM_ARTIFACT_TOKEN }}
+          repo: microsoft/onnxruntime
+          workflow: publish-python-apidocs.yml
+          branch: main
+          name: onnxruntime-python-apidocs
+          path: .api-docs
+
+      - name: Download Objective-C API documentation
+        if: env.UPSTREAM_ARTIFACT_TOKEN != ''
+        uses: dawidd6/action-download-artifact@v2
+        with:
+          github_token: ${{ env.UPSTREAM_ARTIFACT_TOKEN }}
+          repo: microsoft/onnxruntime
+          workflow: publish-objectivec-apidocs.yml
+          branch: main
+          name: onnxruntime-objectivec-apidocs
+          path: .api-docs
+
+      - name: Download JavaScript API documentation
+        if: env.UPSTREAM_ARTIFACT_TOKEN != ''
+        uses: dawidd6/action-download-artifact@v2
+        with:
+          github_token: ${{ env.UPSTREAM_ARTIFACT_TOKEN }}
+          repo: microsoft/onnxruntime
+          workflow: publish-js-apidocs.yml
+          branch: main
+          name: onnxruntime-node-apidocs
+          path: .api-docs
+
+      - name: Merge generated API documentation
+        if: env.UPSTREAM_ARTIFACT_TOKEN != ''
+        run: sudo cp -R ./.api-docs/docs/api/. ./.site/_site/docs/api/
 
       - name: Build the ONNX Runtime landing site
         run: npm run build
+        working-directory: .site
 
       - name: Merge the landing site into the documentation artifact
         # jekyll-build-pages runs in a container and leaves _site owned by root.
-        run: sudo cp -R ./build/. ./_site/
+        run: sudo cp -R ./.site/build/. ./.site/_site/
 
       - name: Upload the generated site
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ./_site
+          path: ./.site/_site
           retention-days: 21
 
   deploy:
