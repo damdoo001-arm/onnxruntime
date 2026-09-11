@@ -27,10 +27,13 @@ concurrency:
 
 jobs:
   build:
+    if: github.repository == 'damdoo001-arm/onnxruntime'
     runs-on: ubuntu-latest
     steps:
       - name: Check out the ONNX Runtime website
         uses: actions/checkout@v3
+        with:
+          persist-credentials: false
 
       - name: Check out ONNX Runtime source
         uses: actions/checkout@v3
@@ -39,6 +42,7 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.onnxruntime_ref || 'main' }}
           path: .sources/onnxruntime
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Check out KleidiAI source and release tags
         uses: actions/checkout@v3
@@ -47,6 +51,7 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.kleidiai_ref || 'main' }}
           path: .sources/kleidiai
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -95,7 +100,8 @@ jobs:
         run: npm run build
 
       - name: Merge the landing site into the documentation artifact
-        run: cp -R ./build/. ./_site/
+        # jekyll-build-pages runs in a container and leaves _site owned by root.
+        run: sudo cp -R ./build/. ./_site/
 
       - name: Upload the generated site
         uses: actions/upload-pages-artifact@v3
@@ -104,6 +110,7 @@ jobs:
           retention-days: 21
 
   deploy:
+    if: github.repository == 'damdoo001-arm/onnxruntime'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
