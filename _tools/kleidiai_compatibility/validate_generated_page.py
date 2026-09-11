@@ -46,6 +46,18 @@ def main() -> None:
         fail("kernel names are not unique")
     if 'type="checkbox"' not in text:
         fail("checkbox filters are missing")
+    if "<th>At pin</th>" in text or "Pin availability" in text:
+        fail("removed pin-availability field is still present")
+    if "<th>ISA" in text or "['isa','ISA']" in text:
+        fail("ISA field was not replaced by Extension")
+    if '<th>Extension</th>' not in text:
+        fail("Extension column is missing")
+    if "class=\"expand-row\"" not in text:
+        fail("operation rows are not expandable")
+    if not all(record.get("extension") for record in records):
+        fail("one or more kernel records are missing extension metadata")
+    if any("availability" in record for record in records):
+        fail("removed pin-availability data is still embedded")
 
     print(f"Validated {page}: {len(records)} unique kernels")
 
