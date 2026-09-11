@@ -98,6 +98,7 @@ function render(openKey=''){renderResults();renderActive();renderDropdowns(openK
 
 
 PAGES_TEMPLATE = r'''---
+layout: default
 title: KleidiAI
 description: KleidiAI micro-kernel compatibility in ONNX Runtime
 parent: Performance

@@ -21,6 +21,7 @@ def main() -> None:
 
     expected_front_matter = (
         "---\n"
+        "layout: default\n"
         "title: KleidiAI\n"
         "description: KleidiAI micro-kernel compatibility in ONNX Runtime\n"
         "parent: Performance\n"
