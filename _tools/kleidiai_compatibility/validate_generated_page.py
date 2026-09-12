@@ -123,7 +123,7 @@ def main() -> None:
     ]
     if not all(
         len(items) == 1
-        and items[0].get("label") == "invocation"
+        and items[0].get("label") == "Invocation"
         and "kai_ukernel_interface.cpp" not in items[0].get("url", "")
         for items in integrated_evidence
     ):

@@ -379,7 +379,7 @@ def invocation_evidence(
         if matches:
             return [
                 {
-                    "label": "invocation",
+                    "label": "Invocation",
                     "url": (
                         f"{report.ORT_GITHUB}/blob/{ort_revision}/"
                         f"{candidate}#L{matches[0]}"
