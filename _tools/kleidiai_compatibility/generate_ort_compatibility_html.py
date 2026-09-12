@@ -406,7 +406,11 @@ def collect() -> tuple[list[dict[str, object]], dict[str, str]]:
     ort_release, ort_release_label = report.latest_stable_release(report.ORT_ROOT)
     packer_map = documented_packer_map(variants, kai_revision)
     elastic_names = elastic_kernel_names()
-    variants = [variant for variant in variants if variant.is_compute]
+    variants = [
+        variant
+        for variant in variants
+        if variant.is_compute and variant.isa != "NEON"
+    ]
     records = []
     for variant in variants:
         output, lhs, rhs = operand_datatypes(variant)
@@ -488,7 +492,7 @@ redirect_from:
 ---
 <div class="kleidiai-page">
   <h1>KleidiAI compatibility in ONNX Runtime</h1>
-  <p class="kai-lede">Public KleidiAI micro-kernels grouped by operation and their exact ONNX Runtime MLAS integration status.</p>
+  <p class="kai-lede">Public SVE- and SME-family KleidiAI micro-kernels grouped by operation and their exact ONNX Runtime MLAS integration status.</p>
   <p class="kai-meta"><span>KleidiAI <a href="__KAI_URL__"><code>__KAI_DESCRIBE__</code></a></span><span>ONNX Runtime <a href="__ORT_URL__"><code>__ORT_SHORT__</code></a></span><span>PR audit __AUDITED_AT__</span></p>
   <p class="kai-note">Eligible ONNX operators are a conservative set traced directly from integrated MLAS paths. Actual acceleration also depends on datatype, shape, CPU features, packing, and runtime configuration.</p>
   <section class="controls" aria-label="Kernel filters">

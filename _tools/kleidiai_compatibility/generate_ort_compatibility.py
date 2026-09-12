@@ -61,6 +61,7 @@ def generate() -> tuple[str, dict[str, int]]:
         "ort",
     )
     pr_audited_at = report.apply_pr_candidates(variants)
+    variants = [variant for variant in variants if variant.isa != "NEON"]
     for variant in variants:
         variant.ort.available_primary = variant.relative_c in ort_pin.files
 
@@ -83,8 +84,8 @@ def generate() -> tuple[str, dict[str, int]]:
         "# KleidiAI compatibility in ONNX Runtime",
         "",
         (
-            "GitHub-native snapshot of public KleidiAI micro-kernels and their exact "
-            "ONNX Runtime MLAS integration status."
+            "GitHub-native snapshot of public SVE- and SME-family KleidiAI "
+            "micro-kernels and their exact ONNX Runtime MLAS integration status."
         ),
         "",
         f"- KleidiAI: [`{kai_describe}`]({report.KAI_GITHUB}/commit/{kai_revision})",
@@ -101,7 +102,7 @@ def generate() -> tuple[str, dict[str, int]]:
         f"| 🟣 PR available | {counts['pr']} |",
         f"| — Not integrated | {counts['not_integrated']} |",
         f"| Unavailable in ONNX Runtime's `{ort_pin.label}` pin | {counts['unavailable_at_pin']} |",
-        f"| **Total public KleidiAI micro-kernels** | **{counts['microkernels']}** |",
+        f"| **Total SVE/SME-family micro-kernels** | **{counts['microkernels']}** |",
         "",
         "> Integration and pin availability are separate. A kernel can be absent from the current "
         "ONNX Runtime pin even when a newer integration pull request exists.",

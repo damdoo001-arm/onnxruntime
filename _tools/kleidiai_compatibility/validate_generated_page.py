@@ -67,6 +67,8 @@ def main() -> None:
         fail("operation rows are not expandable")
     if not all(record.get("extension") for record in records):
         fail("one or more kernel records are missing extension metadata")
+    if any(record.get("extension") == "NEON" for record in records):
+        fail("NEON kernels must not be included in the compatibility page")
     if not all(record.get("tileSource") for record in records):
         fail("one or more kernel records are missing tile provenance")
     missing_generic_tiles = [
