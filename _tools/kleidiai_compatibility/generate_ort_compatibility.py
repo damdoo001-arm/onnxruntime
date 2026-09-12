@@ -67,7 +67,7 @@ def generate() -> tuple[str, dict[str, int]]:
     kai_revision = report.run_git(report.KAI_ROOT, "rev-parse", "HEAD")
     kai_describe = report.describe_revision(report.KAI_ROOT)
     ort_revision = report.run_git(report.ORT_ROOT, "rev-parse", "HEAD")
-    ort_short = report.short_revision(report.ORT_ROOT)
+    ort_release, ort_release_label = report.latest_stable_release(report.ORT_ROOT)
 
     statuses = Counter(integration_status(variant)[0] for variant in variants)
     counts = {
@@ -88,7 +88,7 @@ def generate() -> tuple[str, dict[str, int]]:
         ),
         "",
         f"- KleidiAI: [`{kai_describe}`]({report.KAI_GITHUB}/commit/{kai_revision})",
-        f"- ONNX Runtime: [`{ort_short}`]({report.ORT_GITHUB}/commit/{ort_revision})",
+        f"- ONNX Runtime: [`{ort_release_label}`]({report.ORT_GITHUB}/releases/tag/{ort_release})",
         f"- ONNX Runtime KleidiAI pin: [`{ort_pin.label}`]({report.KAI_GITHUB}/tree/{ort_pin.revision})",
         f"- Open pull requests audited: `{pr_audited_at}`",
         "",

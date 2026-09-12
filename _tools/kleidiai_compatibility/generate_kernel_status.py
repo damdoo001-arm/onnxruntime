@@ -52,6 +52,7 @@ FEATURES = ("dotprod", "i8mm")
 INSTRUCTIONS = ("dot", "i8mm", "mla", "mmla", "mopa", "mop4a", "sdot")
 UARCHES = ("cortexa55",)
 SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".s", ".inc"}
+STABLE_TAG_RE = re.compile(r"^v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)$")
 
 TYPE_LABELS = {
     "bf16": "BF16",
@@ -114,6 +115,35 @@ def short_revision(repo: Path) -> str:
 def describe_revision(repo: Path) -> str:
     described = run_git(repo, "describe", "--tags", "--always", check=False)
     return described or short_revision(repo)
+
+
+def latest_stable_release(repo: Path) -> tuple[str, str]:
+    """Return the newest stable tag and an honest display label for HEAD.
+
+    When HEAD is included in that release, the release tag is sufficient. For
+    an unreleased branch, retain the latest release as the readable baseline
+    and explicitly mark that development changes are also present.
+    """
+
+    releases = []
+    for tag in run_git(repo, "tag", "--list", "v*").splitlines():
+        match = STABLE_TAG_RE.fullmatch(tag)
+        if match:
+            version = tuple(
+                int(match.group(part)) for part in ("major", "minor", "patch")
+            )
+            releases.append((version, tag))
+    if not releases:
+        fail(
+            f"No stable release tags found in {repo}. "
+            "Fetch the official repository tags before generating the page."
+        )
+    _version, latest = max(releases)
+    containing = run_git(
+        repo, "tag", "--contains", "HEAD", "--list", latest, check=False
+    ).splitlines()
+    label = latest if latest in containing else f"{latest} + development"
+    return latest, label
 
 
 def h(value: object) -> str:
@@ -456,9 +486,6 @@ def inventory() -> list[Variant]:
 def files_at_revision(revision: str) -> frozenset[str]:
     output = run_git(KAI_ROOT, "ls-tree", "-r", "--name-only", revision, "--", "kai/ukernels")
     return frozenset(output.splitlines())
-
-
-STABLE_TAG_RE = re.compile(r"^v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)$")
 
 
 def stable_release_tags() -> list[str]:

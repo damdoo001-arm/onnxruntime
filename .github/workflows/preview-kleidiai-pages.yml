@@ -52,10 +52,18 @@ jobs:
         uses: actions/checkout@v3
         with:
           repository: ${{ github.repository }}
-          ref: ${{ github.event_name == 'push' && github.ref_name == 'main' && github.sha || inputs.candidate_ref || 'main' }}
+          # The preview workflow itself lives on the gh-pages-derived preview
+          # branch. Scan fork/main for automatic previews, or the explicitly
+          # selected source ref for a manually dispatched run.
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_ref || 'main' }}
           path: .sources/onnxruntime
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Fetch official ONNX Runtime release tags
+        run: >-
+          git -C .sources/onnxruntime fetch --force --tags
+          https://github.com/microsoft/onnxruntime.git
 
       - name: Check out KleidiAI source and release tags
         uses: actions/checkout@v3
@@ -80,14 +88,7 @@ jobs:
           KLEIDIAI_STANDALONE_OUTPUT: ${{ runner.temp }}/kleidiai_onnxruntime_compatibility.html
           KLEIDIAI_MARKDOWN_OUTPUT: ${{ github.workspace }}/.site/docs/performance/kleidiai/README.md
           KLEIDIAI_MARKDOWN_STANDALONE_OUTPUT: ${{ runner.temp }}/kleidiai_onnxruntime_compatibility.md
-        run: |
-          python _tools/kleidiai_compatibility/generate_ort_compatibility_html.py
-          python _tools/kleidiai_compatibility/generate_ort_compatibility.py
-
-      - name: Validate the generated page
-        run: >-
-          python _tools/kleidiai_compatibility/validate_generated_page.py
-          .site/docs/performance/kleidiai/index.html
+        run: python _tools/kleidiai_compatibility/update_page.py
 
       - name: Remove temporary source checkouts
         run: rm -rf -- "$GITHUB_WORKSPACE/.sources"

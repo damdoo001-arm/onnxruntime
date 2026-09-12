@@ -31,3 +31,15 @@ Environment variables accepted by the generator:
 - `KLEIDIAI_STANDALONE_OUTPUT`: optional standalone report destination.
 - `KLEIDIAI_MARKDOWN_OUTPUT`: generated GitHub fallback destination.
 - `KLEIDIAI_MARKDOWN_STANDALONE_OUTPUT`: optional standalone Markdown destination.
+
+Use the orchestration entry point for both local and CI regeneration:
+
+```sh
+python3 _tools/kleidiai_compatibility/update_page.py \
+  --kleidiai-root /path/to/kleidiai \
+  --onnxruntime-root /path/to/onnxruntime-source
+```
+
+It generates the HTML and Markdown outputs and validates the Jekyll page. The
+ONNX Runtime source checkout must have official release tags available, for
+example via `git fetch --tags upstream`.
