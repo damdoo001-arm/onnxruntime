@@ -82,11 +82,11 @@ ORT_INVOCATION_ROUTES = {
         "sgemm_gemm.ukernel.run_matmul(",
     ),
     ("matmul_clamp_f32_qai8dxp_qsi4c32p", "gemm"): (
-        "onnxruntime/core/mlas/lib/sqnbitgemm_kernel_neon_int8.cpp",
+        "onnxruntime/core/mlas/lib/kleidiai/qnbitgemm_kleidiai.cpp",
         "ukernel.run_matmul(",
     ),
     ("matmul_clamp_f32_qai8dxp_qsi4c32p", "gemv"): (
-        "onnxruntime/core/mlas/lib/sqnbitgemm_kernel_neon_int8.cpp",
+        "onnxruntime/core/mlas/lib/kleidiai/qnbitgemm_kleidiai.cpp",
         "ukernel.run_matmul(",
     ),
     ("matmul_clamp_f32_qai8dxp_qsi8cxp", "gemm"): (
@@ -94,12 +94,20 @@ ORT_INVOCATION_ROUTES = {
         "qgemm_gemm.ukernel.run_matmul(",
     ),
     ("matmul_clamp_f32_qsi8d32p_qai4c32p", "gemm"): (
-        "onnxruntime/core/mlas/lib/sqnbitgemm_kernel_neon_int8.cpp",
+        "onnxruntime/core/mlas/lib/kleidiai/qnbitgemm_kleidiai.cpp",
         "ukernel.run_matmul(",
     ),
     ("matmul_clamp_f32_qsi8d32p_qai4c32p", "gemv"): (
-        "onnxruntime/core/mlas/lib/sqnbitgemm_kernel_neon_int8.cpp",
+        "onnxruntime/core/mlas/lib/kleidiai/qnbitgemm_kleidiai.cpp",
         "ukernel.run_matmul(",
+    ),
+}
+
+# QNBit invocation moved into the KleidiAI-specific implementation. Retain the
+# former location so generation also works for older ONNX Runtime revisions.
+ORT_INVOCATION_PATH_ALIASES = {
+    "onnxruntime/core/mlas/lib/kleidiai/qnbitgemm_kleidiai.cpp": (
+        "onnxruntime/core/mlas/lib/sqnbitgemm_kernel_neon_int8.cpp",
     ),
 }
 
@@ -353,22 +361,35 @@ def invocation_evidence(
             f"{variant.canonical_family}/{variant.operation_key}"
         )
     relative, invocation = route
-    path = report.ORT_ROOT / relative
-    matches = [
-        line_number
-        for line_number, line in enumerate(
-            path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1
-        )
-        if invocation in line
-    ]
-    if not matches:
-        report.fail(f"Cannot find ONNX Runtime invocation {invocation!r} in {path}")
-    return [
-        {
-            "label": "invocation",
-            "url": f"{report.ORT_GITHUB}/blob/{ort_revision}/{relative}#L{matches[0]}",
-        }
-    ]
+    candidates = (relative, *ORT_INVOCATION_PATH_ALIASES.get(relative, ()))
+    checked = []
+    for candidate in candidates:
+        path = report.ORT_ROOT / candidate
+        checked.append(str(path))
+        if not path.is_file():
+            continue
+        matches = [
+            line_number
+            for line_number, line in enumerate(
+                path.read_text(encoding="utf-8", errors="replace").splitlines(),
+                start=1,
+            )
+            if invocation in line
+        ]
+        if matches:
+            return [
+                {
+                    "label": "invocation",
+                    "url": (
+                        f"{report.ORT_GITHUB}/blob/{ort_revision}/"
+                        f"{candidate}#L{matches[0]}"
+                    ),
+                }
+            ]
+    report.fail(
+        f"Cannot find ONNX Runtime invocation for {variant.canonical_family}/"
+        f"{variant.operation_key}; checked: {', '.join(checked)}"
+    )
 
 
 def collect() -> tuple[list[dict[str, object]], dict[str, str]]:
