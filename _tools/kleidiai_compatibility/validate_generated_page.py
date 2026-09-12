@@ -50,14 +50,33 @@ def main() -> None:
         fail("removed pin-availability field is still present")
     if "<th>ISA" in text or "['isa','ISA']" in text:
         fail("ISA field was not replaced by Extension")
-    if '<th>Extension</th>' not in text:
-        fail("Extension column is missing")
+    if '<th>Extension Type</th>' not in text:
+        fail("Extension Type column is missing")
     if "class=\"expand-row\"" not in text:
         fail("operation rows are not expandable")
     if not all(record.get("extension") for record in records):
         fail("one or more kernel records are missing extension metadata")
     if any("availability" in record for record in records):
         fail("removed pin-availability data is still embedded")
+    packing_operations = {
+        "Depthwise RHS pack",
+        "LHS pack",
+        "Packing",
+        "RHS pack K×N",
+        "RHS pack N×K",
+    }
+    if any(record.get("operation") in packing_operations for record in records):
+        fail("packing-only operations are still embedded")
+    if "['tile','Tile']" in text or '<th>ISA / tile</th>' in text:
+        fail("tile is still exposed as a top-level search or table field")
+    if "${record.tile}" in text:
+        fail("tile is still included as a dedicated search term")
+    if any(
+        "packed" in str(record.get(key, "")).lower()
+        for record in records
+        for key in ("output", "lhs", "rhs")
+    ):
+        fail("packed datatypes must use the compact (P) notation")
 
     print(f"Validated {page}: {len(records)} unique kernels")
 
