@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 import generate_kernel_status as report
@@ -24,6 +25,123 @@ PAGES_OUTPUT = Path(
         ROOT / "onnxruntime" / "docs" / "performance" / "kleidiai" / "index.html",
     )
 ).expanduser().resolve()
+
+MISC_LABELS = {"cortexa55": "Cortex-A55"}
+PACK_LAYOUT_RE = re.compile(
+    r"p(?:\d+(?:vl|vs)?|mr|nr)x(?:\d+(?:vl|vs)?|mr|nr)(?:s1s0|s4s0|s16s0)?"
+)
+PACK_LAYOUT_PARTS_RE = re.compile(
+    r"^p(?P<rows>\d+(?:vl|vs)?|mr|nr)x(?P<cols>\d+(?:vl|vs)?|mr|nr)"
+    r"(?P<suffix>s1s0|s4s0|s16s0)?$"
+)
+
+
+def misc_label(variant: report.Variant) -> str:
+    tokens = set(variant.canonical_name.split("_"))
+    return next((label for token, label in MISC_LABELS.items() if token in tokens), "—")
+
+
+def tile_kind(variant: report.Variant) -> str:
+    """Classify scalable/elastic tiles as variable and numeric tiles as fixed."""
+
+    variable = re.search(
+        r"(?:\d+(?:vl|vs)|(?:^|_)(?:mr|nr)(?:x|_))", variant.canonical_name
+    )
+    return "Variable" if variable else "Fixed"
+
+
+def pack_side(variant: report.Variant) -> str | None:
+    if variant.operation_key == "lhs-pack" or "_pack_lhs_" in variant.canonical_name:
+        return "lhs"
+    if variant.operation_key in {"rhs-pack-kxn", "rhs-pack-nxk", "dwconv-rhs-pack"} or "_pack_rhs_" in variant.canonical_name:
+        return "rhs"
+    return None
+
+
+def layouts_compatible(first: str, second: str) -> bool:
+    left = PACK_LAYOUT_PARTS_RE.fullmatch(first)
+    right = PACK_LAYOUT_PARTS_RE.fullmatch(second)
+    if not left or not right or left.group("suffix") != right.group("suffix"):
+        return first == second
+
+    def dimension_matches(a: str, b: str) -> bool:
+        return a == b or a in {"mr", "nr"} or b in {"mr", "nr"}
+
+    return dimension_matches(left.group("rows"), right.group("rows")) and dimension_matches(
+        left.group("cols"), right.group("cols")
+    )
+
+
+def descriptor_compatible(target: report.Descriptor, packed: report.Descriptor) -> bool:
+    if not packed.packed:
+        return False
+    if target.base_type == packed.base_type:
+        return target.quantization == packed.quantization or packed.quantization is None
+    target_bits = re.search(r"\d+", target.base_type)
+    packed_bits = re.search(r"\d+", packed.base_type)
+    return bool(
+        target_bits
+        and packed_bits
+        and target_bits.group() == packed_bits.group()
+        and (target.base_type.startswith("x") or packed.base_type.startswith("x"))
+    )
+
+
+def implementation_descriptors(variant: report.Variant) -> list[str]:
+    """Recover operand descriptors with their implementation-specific layouts."""
+
+    descriptors = []
+    for token in variant.canonical_name.split("_"):
+        if report.DESCRIPTOR_RE.match(token):
+            descriptors.append(token)
+            if len(descriptors) == len(variant.descriptors):
+                break
+    return descriptors
+
+
+def associated_packers(
+    compute: report.Variant, packers: list[report.Variant], side: str, revision: str
+) -> list[dict[str, str]]:
+    implementation = implementation_descriptors(compute)
+    indexes = range(1, 2) if side == "lhs" else range(2, len(compute.descriptors))
+    targets = [
+        (compute.descriptors[index], implementation[index])
+        for index in indexes
+        if index < len(implementation) and compute.descriptors[index].packed
+    ]
+    if not targets:
+        return []
+    target_layouts = {
+        layout for _target, raw in targets for layout in PACK_LAYOUT_RE.findall(raw)
+    }
+    if not target_layouts:
+        target_layouts = set(compute.layouts)
+    matches = []
+    for packer in packers:
+        if pack_side(packer) != side or not packer.layouts:
+            continue
+        if not any(
+            layouts_compatible(target_layout, pack_layout)
+            for target_layout in target_layouts
+            for pack_layout in packer.layouts
+        ):
+            continue
+        typed_match = bool(
+            packer.descriptors
+            and any(
+                descriptor_compatible(target, packer.descriptors[0])
+                for target, _raw in targets
+            )
+        )
+        if not typed_match and packer.operation_key != "pack":
+            continue
+        matches.append(
+            {
+                "name": packer.raw_name,
+                "url": f"{report.KAI_GITHUB}/blob/{revision}/{packer.relative_c}",
+            }
+        )
+    return sorted(matches, key=lambda item: item["name"])
 
 
 def operand_datatypes(variant: report.Variant) -> tuple[str, str, str]:
@@ -50,6 +168,7 @@ def collect() -> tuple[list[dict[str, object]], dict[str, str]]:
         "ort",
     )
     audited_at = report.apply_pr_candidates(variants)
+    packers = [variant for variant in variants if not variant.is_compute]
     variants = [variant for variant in variants if variant.is_compute]
     kai_revision = report.run_git(report.KAI_ROOT, "rev-parse", "HEAD")
     ort_revision = report.run_git(report.ORT_ROOT, "rev-parse", "HEAD")
@@ -79,7 +198,11 @@ def collect() -> tuple[list[dict[str, object]], dict[str, str]]:
                 "rhs": rhs,
                 "signature": " · ".join(item.raw.upper() for item in variant.descriptors) or "—",
                 "extension": variant.isa,
+                "misc": misc_label(variant),
                 "tile": variant.tile,
+                "tileKind": tile_kind(variant),
+                "lhsPacks": associated_packers(variant, packers, "lhs", kai_revision),
+                "rhsPacks": associated_packers(variant, packers, "rhs", kai_revision),
                 "status": status_key,
                 "statusLabel": status_label.removeprefix("✅ ").removeprefix("🔗 ").removeprefix("🟣 ").removeprefix("— "),
                 "evidence": evidence,
@@ -99,16 +222,17 @@ TEMPLATE = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="KleidiAI compatibility in ONNX Runtime"><title>KleidiAI compatibility in ONNX Runtime</title><style>__BASE_CSS__
 .controls{position:sticky;z-index:10;top:0;margin:14px 0;padding:14px;border:1px solid var(--line);border-radius:13px;background:color-mix(in srgb,var(--surface) 94%,transparent);backdrop-filter:blur(14px)}.search-row{display:grid;grid-template-columns:minmax(240px,1fr) auto;gap:9px}.clear{border:1px solid var(--line);border-radius:9px;background:var(--surface3);padding:8px 13px;cursor:pointer}.dropdown-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-top:9px}.filter-menu{position:relative;min-width:0}.filter-menu summary{display:flex;min-height:50px;flex-direction:column;justify-content:center;gap:2px;padding:7px 10px;border:1px solid var(--line);border-radius:9px;background:var(--surface2);cursor:pointer;list-style:none}.filter-menu summary::-webkit-details-marker{display:none}.filter-menu summary:after{content:"▾";position:absolute;right:10px;top:16px;color:var(--muted)}.filter-menu[open] summary{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}.filter-menu[open] summary:after{transform:rotate(180deg)}.filter-name{color:var(--muted);font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.07em}.filter-value{max-width:calc(100% - 20px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.checklist{position:absolute;z-index:30;top:calc(100% + 5px);left:0;width:max(100%,280px);max-height:330px;overflow:auto;padding:7px;border:1px solid var(--line);border-radius:10px;background:var(--surface2);box-shadow:0 18px 45px rgba(0,0,0,.32)}.filter-menu:nth-child(3n) .checklist{right:0;left:auto}.check-option{display:grid;grid-template-columns:16px minmax(0,1fr) auto;align-items:start;gap:8px;padding:7px;border-radius:7px;cursor:pointer}.check-option:hover{background:var(--surface3)}.check-option input{margin:3px 0 0;accent-color:var(--accent)}.check-option .count{color:var(--muted);font-size:11px}.active{display:flex;flex-wrap:wrap;gap:5px;margin-top:9px}.filter-chip{border:1px solid var(--line);border-radius:999px;background:var(--surface2);padding:4px 8px;cursor:pointer;font-size:11px}.results-head{display:flex;align-items:end;justify-content:space-between;gap:12px;margin:0 0 10px}.results-head h2{margin:0;font-size:17px}.main-table{width:100%;min-width:0;table-layout:fixed}.main-table .kai-toggle{width:3rem}.main-table .kai-datatype{width:15%}.main-table .kai-extension{width:14%}.main-table .kai-status{width:26%}.main-table>thead th{overflow-wrap:anywhere}.main-table>tbody>.group-row>td{padding:9px 8px}.main-table td:first-child,.main-table th:first-child{text-align:center}.operation-header th{padding:10px 12px;background:var(--surface3);color:var(--text);text-align:left}.operation-header span{margin-left:6px;color:var(--muted);font-size:11px;font-weight:400}.expand-row{border:0;background:transparent;color:var(--accent);cursor:pointer;font-size:14px}.detail-row>td{padding:0 8px 10px}.kernel-details{padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--surface2)}.kernel-details table{width:100%;margin:0;table-layout:fixed}.kernel-details th,.kernel-details td{padding:7px;text-align:left;overflow-wrap:anywhere}.kernel-details th:nth-child(1){width:18%}.kernel-details th:nth-child(2){width:28%}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.status{font-weight:700}.status-integrated{color:var(--green)}.status-referenced{color:#8ecbff}.status-pr{color:#c4b5fd}.status-not-integrated{color:var(--muted)}.links{display:flex;flex-wrap:wrap;gap:6px;margin-top:3px}@media(max-width:900px){.dropdown-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.filter-menu:nth-child(3n) .checklist{right:auto;left:0}.filter-menu:nth-child(2n) .checklist{right:0;left:auto}}@media(max-width:520px){.shell{width:min(100% - 16px,1600px);padding-top:8px}.controls{position:static}.search-row,.dropdown-grid{grid-template-columns:1fr}.filter-menu:nth-child(2n) .checklist{right:auto;left:0}.checklist{width:100%}}
-</style><style>.main-table{width:100%!important;max-width:100%!important;min-width:0!important;table-layout:fixed!important}.main-table>thead>tr>th:nth-child(1),.main-table>tbody>.group-row>td:nth-child(1){width:5%!important;text-align:center}.main-table>thead>tr>th:nth-child(n+2):nth-child(-n+5),.main-table>tbody>.group-row>td:nth-child(n+2):nth-child(-n+5){width:15%!important}.main-table>thead>tr>th:nth-child(6),.main-table>tbody>.group-row>td:nth-child(6){width:35%!important}.main-table>thead th,.main-table>tbody>.group-row>td{overflow-wrap:anywhere;word-break:break-word}.kernel-details table{width:100%!important;min-width:0!important;table-layout:fixed!important}.kernel-details th:nth-child(1){width:18%!important}.kernel-details th:nth-child(2){width:28%!important}.kernel-details th,.kernel-details td{overflow-wrap:anywhere;word-break:break-word}@media(max-width:700px){.table-wrap{overflow-x:auto}.main-table{min-width:42rem!important}}</style></head><body><main class="shell"><header class="hero"><h1>KleidiAI compatibility in ONNX Runtime</h1><p class="lede">A focused compatibility view with grouped operations and multi-select requirement filters.</p><div class="meta"><span>KleidiAI <a href="__KAI_URL__"><code>__KAI_DESCRIBE__</code></a></span> · <span>ONNX Runtime <a href="__ORT_URL__"><code>__ORT_SHORT__</code></a></span> · <span>PR audit __AUDITED_AT__</span></div></header>
-<section class="controls" aria-label="Kernel filters"><div class="search-row"><input id="search" class="search" type="search" placeholder="Search operations or kernel symbols…"><button id="clear" class="clear" type="button">Clear filters</button></div><div id="dropdowns" class="dropdown-grid"></div><div id="activeFilters" class="active"></div></section><section class="results"><div class="results-head"><h2>Matching operations</h2><span id="resultCount" class="muted count" aria-live="polite"></span></div><div class="table-wrap"><table class="main-table"><thead><tr><th aria-label="Expand kernels"></th><th>Output datatype</th><th>LHS datatype</th><th>RHS datatype</th><th>Extension Type</th><th>ONNX Runtime</th></tr></thead><tbody id="results"></tbody></table><div id="empty" class="empty" hidden>No operations match these filters.</div></div></section></main>
+</style><style>.main-table{width:100%!important;max-width:100%!important;min-width:0!important;table-layout:fixed!important}.main-table>thead>tr>th:nth-child(1),.main-table>tbody>.group-row>td:nth-child(1){width:4%!important;text-align:center}.main-table>thead>tr>th:nth-child(n+2):nth-child(-n+4),.main-table>tbody>.group-row>td:nth-child(n+2):nth-child(-n+4){width:14%!important}.main-table>thead>tr>th:nth-child(5),.main-table>tbody>.group-row>td:nth-child(5){width:13%!important}.main-table>thead>tr>th:nth-child(6),.main-table>tbody>.group-row>td:nth-child(6){width:12%!important}.main-table>thead>tr>th:nth-child(7),.main-table>tbody>.group-row>td:nth-child(7){width:29%!important}.main-table>thead th,.main-table>tbody>.group-row>td{overflow-wrap:anywhere;word-break:break-word}.kernel-details table{width:100%!important;min-width:0!important;table-layout:fixed!important}.kernel-details th:nth-child(1){width:9%!important}.kernel-details th:nth-child(2){width:28%!important}.kernel-details th:nth-child(3),.kernel-details th:nth-child(4){width:20%!important}.kernel-details th:nth-child(5){width:23%!important}.kernel-details th,.kernel-details td{overflow-wrap:anywhere;word-break:break-word}.datatype{display:inline-block;padding:2px 5px;border-radius:5px}.type-output{color:#8ecbff;background:rgba(88,166,255,.12)}.type-lhs{color:#6ce8bb;background:rgba(108,232,187,.1)}.type-rhs{color:#c4b5fd;background:rgba(196,181,253,.1)}.extension-badge{color:#8ecbff}.misc-badge,.status-partial{color:var(--amber)}.pack-links{display:grid;gap:5px}.kernel-link code,.pack-link code{padding:0;background:transparent}.lhs-pack code{color:#6ce8bb}.rhs-pack code{color:#c4b5fd}@media(max-width:700px){.table-wrap{overflow-x:auto}.main-table{min-width:46rem!important}}</style></head><body><main class="shell"><header class="hero"><h1>KleidiAI compatibility in ONNX Runtime</h1><p class="lede">A focused compatibility view with grouped operations and multi-select requirement filters.</p><div class="meta"><span>KleidiAI <a href="__KAI_URL__"><code>__KAI_DESCRIBE__</code></a></span> · <span>ONNX Runtime <a href="__ORT_URL__"><code>__ORT_SHORT__</code></a></span> · <span>PR audit __AUDITED_AT__</span></div></header>
+<section class="controls" aria-label="Kernel filters"><div class="search-row"><input id="search" class="search" type="search" placeholder="Search operations or kernel symbols…"><button id="clear" class="clear" type="button">Clear filters</button></div><div id="dropdowns" class="dropdown-grid"></div><div id="activeFilters" class="active"></div></section><section class="results"><div class="results-head"><h2>Matching operations</h2><span id="resultCount" class="muted count" aria-live="polite"></span></div><div class="table-wrap"><table class="main-table"><thead><tr><th aria-label="Expand kernels"></th><th>Output datatype</th><th>LHS datatype</th><th>RHS datatype</th><th>Extension Type</th><th>Misc</th><th>ONNX Runtime</th></tr></thead><tbody id="results"></tbody></table><div id="empty" class="empty" hidden>No operations match these filters.</div></div></section></main>
 <script type="application/json" id="kernelData">__DATA__</script><script>
-(()=>{const data=JSON.parse(document.getElementById('kernelData').textContent);const defs=[['operation','Operation'],['output','Output datatype'],['lhs','LHS datatype'],['rhs','RHS datatype'],['extension','Extension Type'],['status','ORT status']];const labels={integrated:'Integrated',referenced:'Referenced only',pr:'PR available','not-integrated':'Not integrated'};const selected=Object.fromEntries(defs.map(([key])=>[key,new Set()]));const dropdowns=document.getElementById('dropdowns'),search=document.getElementById('search'),body=document.getElementById('results');const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const values=key=>[...new Set(data.map(r=>r[key]).filter(value=>value&&value!=='—'))].sort((a,b)=>String(labels[a]||a).localeCompare(String(labels[b]||b)));
-function matches(record,omit=''){const query=search.value.trim().toLowerCase();if(query&&!`${record.name} ${record.operation} ${record.output} ${record.lhs} ${record.rhs} ${record.signature} ${record.extension}`.toLowerCase().includes(query))return false;return defs.every(([key])=>key===omit||!selected[key].size||selected[key].has(record[key]))}
+(()=>{const data=JSON.parse(document.getElementById('kernelData').textContent);const defs=[['operation','Operation'],['output','Output datatype'],['lhs','LHS datatype'],['rhs','RHS datatype'],['extension','Extension Type'],['tileKind','Tile size'],['status','ORT status']];const labels={integrated:'Integrated',referenced:'Referenced only',pr:'PR available','not-integrated':'Not integrated'};const selected=Object.fromEntries(defs.map(([key])=>[key,new Set()]));const dropdowns=document.getElementById('dropdowns'),search=document.getElementById('search'),body=document.getElementById('results');const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const values=key=>[...new Set(data.map(r=>r[key]).filter(value=>value&&value!=='—'))].sort((a,b)=>String(labels[a]||a).localeCompare(String(labels[b]||b)));
+function matches(record,omit=''){const query=search.value.trim().toLowerCase();if(query&&!`${record.name} ${record.operation} ${record.output} ${record.lhs} ${record.rhs} ${record.signature} ${record.extension} ${record.misc}`.toLowerCase().includes(query))return false;return defs.every(([key])=>key===omit||!selected[key].size||selected[key].has(record[key]))}
 function renderDropdowns(openKey=''){dropdowns.innerHTML=defs.map(([key,label])=>{const chosen=[...selected[key]].map(value=>labels[value]||value);const summary=chosen.length===0?'All':chosen.length<=2?chosen.join(', '):`${chosen.length} selected`;return `<details class="filter-menu" data-key="${key}" ${openKey===key?'open':''}><summary><span class="filter-name">${esc(label)}</span><strong class="filter-value" title="${esc(chosen.join(', '))}">${esc(summary)}</strong></summary><div class="checklist" role="group" aria-label="${esc(label)}">${values(key).map(value=>{const count=data.filter(record=>matches(record,key)&&record[key]===value).length;return `<label class="check-option"><input type="checkbox" data-key="${key}" value="${esc(value)}" ${selected[key].has(value)?'checked':''}><span>${esc(labels[value]||value)}</span><span class="count">${count}</span></label>`}).join('')}</div></details>`}).join('');dropdowns.querySelectorAll('input').forEach(input=>input.addEventListener('change',()=>{input.checked?selected[input.dataset.key].add(input.value):selected[input.dataset.key].delete(input.value);render(input.dataset.key)}));dropdowns.querySelectorAll('details').forEach(detail=>detail.addEventListener('toggle',()=>{if(detail.open)dropdowns.querySelectorAll('details').forEach(other=>{if(other!==detail)other.open=false})}))}
 function renderActive(){const entries=defs.flatMap(([key,label])=>[...selected[key]].map(value=>({key,label,value})));document.getElementById('activeFilters').innerHTML=entries.map(item=>`<button class="filter-chip" type="button" data-key="${item.key}" data-value="${esc(item.value)}">${esc(item.label)}: ${esc(labels[item.value]||item.value)} ×</button>`).join('');document.querySelectorAll('.filter-chip').forEach(button=>button.addEventListener('click',()=>{selected[button.dataset.key].delete(button.dataset.value);render()}))}
-function groupRecords(records){const groups=new Map();for(const record of records){const key=[record.operation,record.output,record.lhs,record.rhs,record.extension].join('\u0000');if(!groups.has(key))groups.set(key,{operation:record.operation,output:record.output,lhs:record.lhs,rhs:record.rhs,extension:record.extension,kernels:[]});groups.get(key).kernels.push(record)}return [...groups.values()].sort((a,b)=>a.operation.localeCompare(b.operation)||a.output.localeCompare(b.output)||a.lhs.localeCompare(b.lhs)||a.rhs.localeCompare(b.rhs)||a.extension.localeCompare(b.extension))}
-function statusSummary(kernels){const counts=new Map();for(const kernel of kernels)counts.set(kernel.status,(counts.get(kernel.status)||0)+1);if(counts.size===1){const status=kernels[0].status;return `<span class="status status-${esc(status)}">${esc(labels[status]||kernels[0].statusLabel)}</span>`}const covered=kernels.filter(kernel=>kernel.status!=='not-integrated').length;return `<span class="status">${covered} of ${kernels.length} covered</span>`}
-function renderResults(){const shown=data.filter(record=>matches(record));const groups=groupRecords(shown);const operations=new Map();for(const group of groups){if(!operations.has(group.operation))operations.set(group.operation,[]);operations.get(group.operation).push(group)}document.getElementById('resultCount').textContent=`${operations.size} operations · ${groups.length} variants · ${shown.length} kernels`;document.getElementById('empty').hidden=groups.length>0;let index=0;body.innerHTML=[...operations].map(([operation,variants])=>{const operationKernelCount=variants.reduce((count,variant)=>count+variant.kernels.length,0);return `<tr class="operation-header"><th colspan="6">${esc(operation)} <span>${variants.length} variant${variants.length===1?'':'s'} · ${operationKernelCount} kernel${operationKernelCount===1?'':'s'}</span></th></tr>${variants.map(group=>{const detailsId=`kernel-details-${index++}`;const kernels=[...group.kernels].sort((a,b)=>a.tile.localeCompare(b.tile)||a.name.localeCompare(b.name));return `<tr class="group-row"><td><button class="expand-row" type="button" aria-expanded="false" aria-controls="${detailsId}" title="Show ${kernels.length} kernels"><span aria-hidden="true">▶</span><span class="sr-only">Show kernels</span></button></td><td><code>${esc(group.output)}</code></td><td><code>${esc(group.lhs)}</code></td><td><code>${esc(group.rhs)}</code></td><td><span class="badge">${esc(group.extension)}</span></td><td>${statusSummary(kernels)}</td></tr><tr id="${detailsId}" class="detail-row" hidden><td></td><td colspan="5"><div class="kernel-details"><table><thead><tr><th>Tile size</th><th>KleidiAI kernel</th><th>ONNX Runtime integration</th></tr></thead><tbody>${kernels.map(kernel=>`<tr><td>${kernel.tile!=='—'?`<span class="badge">${esc(kernel.tile)}</span>`:'—'}</td><td><a href="${esc(kernel.source)}" title="${esc(kernel.name)}" aria-label="Open KleidiAI source for ${esc(kernel.name)}" target="_blank" rel="noopener noreferrer">KleidiAI source</a></td><td><span class="status status-${esc(kernel.status)}">${esc(kernel.statusLabel)}</span><div class="links">${kernel.evidence.length?kernel.evidence.map(item=>`<a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">${esc(item.label)}</a>`).join(''):'—'}</div></td></tr>`).join('')}</tbody></table></div></td></tr>`}).join('')}`}).join('');body.querySelectorAll('.expand-row').forEach(button=>button.addEventListener('click',()=>{const expanded=button.getAttribute('aria-expanded')==='true';button.setAttribute('aria-expanded',String(!expanded));button.querySelector('[aria-hidden]').textContent=expanded?'▶':'▼';document.getElementById(button.getAttribute('aria-controls')).hidden=expanded}))}
+function groupRecords(records){const groups=new Map();for(const record of records){const key=[record.operation,record.output,record.lhs,record.rhs,record.extension,record.misc].join('\u0000');if(!groups.has(key))groups.set(key,{operation:record.operation,output:record.output,lhs:record.lhs,rhs:record.rhs,extension:record.extension,misc:record.misc,kernels:[]});groups.get(key).kernels.push(record)}return [...groups.values()].sort((a,b)=>a.operation.localeCompare(b.operation)||a.output.localeCompare(b.output)||a.lhs.localeCompare(b.lhs)||a.rhs.localeCompare(b.rhs)||a.extension.localeCompare(b.extension)||a.misc.localeCompare(b.misc))}
+function statusSummary(kernels){const counts=new Map();for(const kernel of kernels)counts.set(kernel.status,(counts.get(kernel.status)||0)+1);if(counts.size===1){const status=kernels[0].status;return `<span class="status status-${esc(status)}">${esc(labels[status]||kernels[0].statusLabel)}</span>`}const covered=kernels.filter(kernel=>kernel.status!=='not-integrated').length;return `<span class="status status-partial">${covered} of ${kernels.length} covered</span>`}
+function packLinks(items,className){return items.length?`<div class="pack-links">${items.map(item=>`<a class="${className}" href="${esc(item.url)}" title="${esc(item.name)}" target="_blank" rel="noopener noreferrer"><code>${esc(item.name)}</code></a>`).join('')}</div>`:'<span class="muted">—</span>'}
+function renderResults(){const shown=data.filter(record=>matches(record));const groups=groupRecords(shown);const operations=new Map();for(const group of groups){if(!operations.has(group.operation))operations.set(group.operation,[]);operations.get(group.operation).push(group)}document.getElementById('resultCount').textContent=`${operations.size} operations · ${groups.length} variants · ${shown.length} kernels`;document.getElementById('empty').hidden=groups.length>0;let index=0;body.innerHTML=[...operations].map(([operation,variants])=>{const operationKernelCount=variants.reduce((count,variant)=>count+variant.kernels.length,0);return `<tr class="operation-header"><th colspan="7">${esc(operation)} <span>${variants.length} variant${variants.length===1?'':'s'} · ${operationKernelCount} kernel${operationKernelCount===1?'':'s'}</span></th></tr>${variants.map(group=>{const detailsId=`kernel-details-${index++}`;const kernels=[...group.kernels].sort((a,b)=>a.tile.localeCompare(b.tile)||a.name.localeCompare(b.name));return `<tr class="group-row"><td><button class="expand-row" type="button" aria-expanded="false" aria-controls="${detailsId}" title="Show ${kernels.length} kernels"><span aria-hidden="true">▶</span><span class="sr-only">Show kernels</span></button></td><td><code class="datatype type-output">${esc(group.output)}</code></td><td><code class="datatype type-lhs">${esc(group.lhs)}</code></td><td><code class="datatype type-rhs">${esc(group.rhs)}</code></td><td><span class="badge extension-badge">${esc(group.extension)}</span></td><td>${group.misc==='—'?'<span class="muted">—</span>':`<span class="badge misc-badge">${esc(group.misc)}</span>`}</td><td>${statusSummary(kernels)}</td></tr><tr id="${detailsId}" class="detail-row" hidden><td colspan="7"><div class="kernel-details"><table><thead><tr><th>Tile</th><th>Compute kernel</th><th>LHS packer</th><th>RHS packer</th><th>ONNX Runtime</th></tr></thead><tbody>${kernels.map(kernel=>`<tr><td>${kernel.tile!=='—'?`<span class="badge tile-badge">${esc(kernel.tile)}</span>`:'—'}</td><td><a class="kernel-link" href="${esc(kernel.source)}" target="_blank" rel="noopener noreferrer"><code>${esc(kernel.name)}</code></a></td><td>${packLinks(kernel.lhsPacks,'pack-link lhs-pack')}</td><td>${packLinks(kernel.rhsPacks,'pack-link rhs-pack')}</td><td><span class="status status-${esc(kernel.status)}">${esc(kernel.statusLabel)}</span><div class="links">${kernel.evidence.length?kernel.evidence.map(item=>`<a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">${esc(item.label)}</a>`).join(''):'—'}</div></td></tr>`).join('')}</tbody></table></div></td></tr>`}).join('')}`}).join('');body.querySelectorAll('.expand-row').forEach(button=>button.addEventListener('click',()=>{const expanded=button.getAttribute('aria-expanded')==='true';button.setAttribute('aria-expanded',String(!expanded));button.querySelector('[aria-hidden]').textContent=expanded?'▶':'▼';document.getElementById(button.getAttribute('aria-controls')).hidden=expanded}))}
 function render(openKey=''){renderResults();renderActive();renderDropdowns(openKey)}search.addEventListener('input',()=>render());document.getElementById('clear').addEventListener('click',()=>{Object.values(selected).forEach(set=>set.clear());search.value='';render()});document.addEventListener('click',event=>{if(!event.target.closest('.filter-menu'))dropdowns.querySelectorAll('details').forEach(detail=>detail.open=false)});document.addEventListener('keydown',event=>{if(event.key==='Escape'){const open=[...dropdowns.querySelectorAll('details')].find(detail=>detail.open);if(open){open.open=false;open.querySelector('summary').focus()}}});render()})();
 </script></body></html>'''
 
@@ -131,7 +255,7 @@ redirect_from:
     <div class="search-row"><input id="search" class="search" type="search" placeholder="Search operations or kernel symbols…" aria-label="Search kernels"><button id="clear" class="clear" type="button">Clear filters</button></div>
     <div id="dropdowns" class="dropdown-grid"></div><div id="activeFilters" class="active"></div>
   </section>
-  <section class="results"><div class="results-head"><h2>Matching operations</h2><span id="resultCount" class="muted count" aria-live="polite"></span></div><div class="table-wrap"><table class="main-table"><thead><tr><th aria-label="Expand kernels"></th><th>Output datatype</th><th>LHS datatype</th><th>RHS datatype</th><th>Extension Type</th><th>ONNX Runtime</th></tr></thead><tbody id="results"></tbody></table><div id="empty" class="empty" hidden>No operations match these filters.</div></div></section>
+  <section class="results"><div class="results-head"><h2>Matching operations</h2><span id="resultCount" class="muted count" aria-live="polite"></span></div><div class="table-wrap"><table class="main-table"><thead><tr><th aria-label="Expand kernels"></th><th>Output datatype</th><th>LHS datatype</th><th>RHS datatype</th><th>Extension Type</th><th>Misc</th><th>ONNX Runtime</th></tr></thead><tbody id="results"></tbody></table><div id="empty" class="empty" hidden>No operations match these filters.</div></div></section>
 </div>
 <style>
 .kleidiai-page{--kai-border:#eeebee;--kai-surface:#f5f6fa;--kai-hover:#ebedf5;--kai-text:#5c5962;--kai-heading:#27262b;--kai-muted:#716f75;--kai-link:#226aca;color:var(--kai-text)}
@@ -144,7 +268,7 @@ redirect_from:
 @media(max-width:50rem){.kleidiai-page .dropdown-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.kleidiai-page .filter-menu:nth-child(3n) .checklist{right:auto;left:0}.kleidiai-page .filter-menu:nth-child(2n) .checklist{right:0;left:auto}}@media(max-width:31.25rem){.kleidiai-page .search-row,.kleidiai-page .dropdown-grid{grid-template-columns:1fr}.kleidiai-page .filter-menu:nth-child(2n) .checklist{right:auto;left:0}.kleidiai-page .checklist{width:100%}}
 </style>
 <style>
-.kleidiai-page .table-wrap{overflow-x:hidden}.kleidiai-page .main-table{width:100%!important;max-width:100%!important;min-width:0!important;table-layout:fixed!important}.kleidiai-page .main-table>thead>tr>th:nth-child(1),.kleidiai-page .main-table>tbody>.group-row>td:nth-child(1){width:5%!important;text-align:center}.kleidiai-page .main-table>thead>tr>th:nth-child(n+2):nth-child(-n+5),.kleidiai-page .main-table>tbody>.group-row>td:nth-child(n+2):nth-child(-n+5){width:15%!important}.kleidiai-page .main-table>thead>tr>th:nth-child(6),.kleidiai-page .main-table>tbody>.group-row>td:nth-child(6){width:35%!important}.kleidiai-page .main-table>thead th,.kleidiai-page .main-table>tbody>.group-row>td{overflow-wrap:anywhere;word-break:break-word}.kleidiai-page .kernel-details table{width:100%!important;min-width:0!important;table-layout:fixed!important}.kleidiai-page .kernel-details th:nth-child(1){width:18%!important}.kleidiai-page .kernel-details th:nth-child(2){width:28%!important}.kleidiai-page .kernel-details th,.kleidiai-page .kernel-details td{overflow-wrap:anywhere;word-break:break-word}@media(max-width:700px){.kleidiai-page .table-wrap{overflow-x:auto}.kleidiai-page .main-table{min-width:42rem!important}}
+.kleidiai-page .table-wrap{overflow-x:hidden}.kleidiai-page .main-table{width:100%!important;max-width:100%!important;min-width:0!important;table-layout:fixed!important}.kleidiai-page .main-table>thead>tr>th:nth-child(1),.kleidiai-page .main-table>tbody>.group-row>td:nth-child(1){width:4%!important;text-align:center}.kleidiai-page .main-table>thead>tr>th:nth-child(n+2):nth-child(-n+4),.kleidiai-page .main-table>tbody>.group-row>td:nth-child(n+2):nth-child(-n+4){width:14%!important}.kleidiai-page .main-table>thead>tr>th:nth-child(5),.kleidiai-page .main-table>tbody>.group-row>td:nth-child(5){width:13%!important}.kleidiai-page .main-table>thead>tr>th:nth-child(6),.kleidiai-page .main-table>tbody>.group-row>td:nth-child(6){width:12%!important}.kleidiai-page .main-table>thead>tr>th:nth-child(7),.kleidiai-page .main-table>tbody>.group-row>td:nth-child(7){width:29%!important}.kleidiai-page .main-table>thead th,.kleidiai-page .main-table>tbody>.group-row>td{overflow-wrap:anywhere;word-break:break-word}.kleidiai-page .kernel-details table{width:100%!important;min-width:0!important;table-layout:fixed!important}.kleidiai-page .kernel-details th:nth-child(1){width:9%!important}.kleidiai-page .kernel-details th:nth-child(2){width:28%!important}.kleidiai-page .kernel-details th:nth-child(3),.kleidiai-page .kernel-details th:nth-child(4){width:20%!important}.kleidiai-page .kernel-details th:nth-child(5){width:23%!important}.kleidiai-page .kernel-details th,.kleidiai-page .kernel-details td{overflow-wrap:anywhere;word-break:break-word}.kleidiai-page .datatype{display:inline-block;padding:.08rem .28rem;border-radius:.25rem}.kleidiai-page .type-output{color:#1e5fb4;background:#edf5ff}.kleidiai-page .type-lhs{color:#13795b;background:#edf9f5}.kleidiai-page .type-rhs{color:#6f42c1;background:#f5f0ff}.kleidiai-page .extension-badge{color:#1e5fb4;background:#edf5ff}.kleidiai-page .misc-badge,.kleidiai-page .status-partial{color:#8a5b00;background:#fff8e6}.kleidiai-page .pack-links{display:grid;gap:.3rem}.kleidiai-page .kernel-link code,.kleidiai-page .pack-link code{padding:0;background:transparent;font-size:.68rem;line-height:1.35}.kleidiai-page .kernel-link code{color:#1e5fb4}.kleidiai-page .lhs-pack code{color:#13795b}.kleidiai-page .rhs-pack code{color:#6f42c1}@media(max-width:700px){.kleidiai-page .table-wrap{overflow-x:auto}.kleidiai-page .main-table{min-width:46rem!important}}
 </style>
 __RUNTIME__
 '''

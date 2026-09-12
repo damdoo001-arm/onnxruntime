@@ -56,6 +56,20 @@ def main() -> None:
         fail("operation rows are not expandable")
     if not all(record.get("extension") for record in records):
         fail("one or more kernel records are missing extension metadata")
+    if not all(record.get("misc") for record in records):
+        fail("one or more kernel records are missing misc metadata")
+    if {record.get("tileKind") for record in records} != {"Fixed", "Variable"}:
+        fail("tile-size classification must contain Fixed and Variable kernels")
+    if not any(record.get("misc") == "Cortex-A55" for record in records):
+        fail("Cortex-A55 specialization metadata is missing")
+    if not all(isinstance(record.get("lhsPacks"), list) for record in records):
+        fail("one or more kernel records are missing LHS packer associations")
+    if not all(isinstance(record.get("rhsPacks"), list) for record in records):
+        fail("one or more kernel records are missing RHS packer associations")
+    if not any(record.get("rhsPacks") for record in records):
+        fail("no RHS packer associations were discovered")
+    if '<td></td><td colspan=' in text or '<td colspan="7">' not in text:
+        fail("expanded rows must span the full table width without indentation")
     if any("availability" in record for record in records):
         fail("removed pin-availability data is still embedded")
     packing_operations = {
