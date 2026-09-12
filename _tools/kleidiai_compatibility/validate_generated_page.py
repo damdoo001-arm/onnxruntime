@@ -52,24 +52,39 @@ def main() -> None:
         fail("ISA field was not replaced by Extension")
     if '<th>Extension Type</th>' not in text:
         fail("Extension Type column is missing")
+    if "['ortOps','ONNX operator']" not in text:
+        fail("ONNX operator filter is missing")
     if "class=\"expand-row\"" not in text:
         fail("operation rows are not expandable")
     if not all(record.get("extension") for record in records):
         fail("one or more kernel records are missing extension metadata")
-    if not all(record.get("misc") for record in records):
-        fail("one or more kernel records are missing misc metadata")
-    if {record.get("tileKind") for record in records} != {"Fixed", "Variable"}:
-        fail("tile-size classification must contain Fixed and Variable kernels")
-    if not any(record.get("misc") == "Cortex-A55" for record in records):
-        fail("Cortex-A55 specialization metadata is missing")
+    if "<th>Misc</th>" in text or any("misc" in record for record in records):
+        fail("removed misc field is still present")
+    variable = [record for record in records if record.get("tileKind") == "Variable"]
+    elastic_kernel = (
+        "kai_matmul_clamp_f32_f32p4vsx1_f32p4vsx1bf32_8vsx8vs_sme2_mopa"
+    )
+    if len(variable) != 1 or variable[0]["name"] != elastic_kernel:
+        fail("Variable must identify only KleidiAI's elastic GEMM implementation")
     if not all(isinstance(record.get("lhsPacks"), list) for record in records):
         fail("one or more kernel records are missing LHS packer associations")
     if not all(isinstance(record.get("rhsPacks"), list) for record in records):
         fail("one or more kernel records are missing RHS packer associations")
     if not any(record.get("rhsPacks") for record in records):
         fail("no RHS packer associations were discovered")
-    if '<td></td><td colspan=' in text or '<td colspan="7">' not in text:
+    if not any(
+        len(record.get("lhsPacks", [])) > 1 or len(record.get("rhsPacks", [])) > 1
+        for record in records
+    ):
+        fail("authoritative many-to-one packer associations are missing")
+    if not all(isinstance(record.get("ortOps"), list) for record in records):
+        fail("one or more kernel records are missing ONNX operator metadata")
+    if not all(record.get("ortOps") for record in records if record.get("status") == "integrated"):
+        fail("an integrated kernel has no framework-level ONNX operator mapping")
+    if '<td></td><td colspan=' in text or '<td colspan="6">' not in text:
         fail("expanded rows must span the full table width without indentation")
+    if '>kernel</a>' not in text or "'packer'" not in text:
+        fail("expanded rows must use compact kernel and packer link labels")
     if any("availability" in record for record in records):
         fail("removed pin-availability data is still embedded")
     packing_operations = {
