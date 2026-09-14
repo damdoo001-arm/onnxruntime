@@ -2,16 +2,15 @@
 
 This directory contains the self-contained Python generator used by the fork's
 Pages preview. The workflow checks out `microsoft/onnxruntime@gh-pages` as an
-immutable website baseline, scans the candidate commit from this fork plus a
-selected KleidiAI revision, and writes the generated page into the runner's
-temporary baseline tree. It then uses the same Jekyll and Svelte stages as the
-ONNX Runtime publishing workflow and deploys only to this fork's Pages site.
+immutable website baseline, analyses the newest stable `vX.Y.Z` KleidiAI and
+ONNX Runtime tags, and writes the generated page into the runner's temporary
+baseline tree. It then uses the same Jekyll and Svelte stages as the ONNX
+Runtime publishing workflow and deploys only to this fork's Pages site.
 
 The workflow has a hard guard for `damdoo001-arm/onnxruntime`, uses read-only
 source checkouts without persisted credentials, and has no repository-content
-write permission. A push to the fork's `main` scans that exact commit. Runs on
-the preview branch and manual runs scan the selected `candidate_ref`, which
-defaults to the fork's `main`.
+write permission. Push and manual runs both resolve stable releases from full
+source checkouts; development commits and release candidates are not used.
 
 The hand-authored documentation and landing site require no extra secret. To
 also reproduce the generated C, C#, Java, Python, Objective-C, and JavaScript
@@ -40,6 +39,6 @@ python3 _tools/kleidiai_compatibility/update_page.py \
   --onnxruntime-root /path/to/onnxruntime-source
 ```
 
-It generates the HTML and Markdown outputs and validates the Jekyll page. The
-ONNX Runtime source checkout must have official release tags available, for
-example via `git fetch --tags upstream`.
+It generates the HTML and Markdown outputs and validates the Jekyll page. Both
+source checkouts must have official release tags available, for example via
+`git fetch --tags upstream`.

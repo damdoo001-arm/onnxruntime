@@ -23,7 +23,7 @@ def main() -> None:
         "---\n"
         "layout: default\n"
         "title: Arm KleidiAI\n"
-        "description: KleidiAI micro-kernel compatibility in ONNX Runtime\n"
+        "description: Arm KleidiAI micro-kernel compatibility in ONNX Runtime\n"
         "parent: Performance\n"
     )
     if not text.startswith(expected_front_matter):
@@ -32,15 +32,44 @@ def main() -> None:
         fail("Pages output must be a Jekyll content fragment, not a complete document")
     if re.search(r"__[A-Z][A-Z0-9_]*__", text):
         fail("unresolved template placeholder")
-    ort_release = re.search(
-        r"ONNX Runtime <a href=\"https://github\.com/microsoft/onnxruntime/"
-        r"releases/tag/(?P<tag>v\d+\.\d+\.\d+)\"><code>(?P<label>[^<]+)</code>",
+    if "<h1>Arm KleidiAI compatibility in ONNX Runtime</h1>" not in text:
+        fail("visible title does not identify Arm KleidiAI")
+    if (
+        '<a href="https://www.arm.com/markets/artificial-intelligence/software/kleidi">'
+        "Arm KleidiAI micro-kernel library</a>" not in text
+    ):
+        fail("introductory Arm KleidiAI library link is missing")
+    kai_release = re.search(
+        r"KleidiAI tagged release: <a href=\"https://github\.com/ARM-software/"
+        r"kleidiai/tree/(?P<tag>v\d+\.\d+\.\d+)\"><code>(?P=tag)</code>",
         text,
     )
-    if not ort_release or not ort_release.group("label").startswith(
-        ort_release.group("tag")
-    ):
+    if not kai_release:
+        fail("KleidiAI metadata does not use a stable release tag")
+    ort_release = re.search(
+        r"ONNX Runtime release: <a href=\"https://github\.com/microsoft/"
+        r"onnxruntime/tree/(?P<tag>v\d+\.\d+\.\d+)\"><code>(?P=tag)</code>",
+        text,
+    )
+    if not ort_release:
         fail("ONNX Runtime metadata does not use a stable release tag")
+    if not re.search(
+        r"ONNX Runtime KleidiAI pin: <a href=\"https://github\.com/ARM-software/"
+        r"kleidiai/tree/(?P<pin>v\d+\.\d+\.\d+)\"><code>(?P=pin)</code>",
+        text,
+    ):
+        fail("ONNX Runtime KleidiAI pin metadata is missing or malformed")
+    if not re.search(
+        r'Last updated date: <time datetime="\d{4}-\d{2}-\d{2}">\d{4}-\d{2}-\d{2}</time>',
+        text,
+    ):
+        fail("last-updated metadata is missing or malformed")
+    if re.search(
+        r"github\.com/(?:ARM-software/kleidiai|microsoft/onnxruntime)/"
+        r"(?:blob|commit)/[0-9a-f]{40}",
+        text,
+    ):
+        fail("page contains an intermediate source commit reference")
 
     match = re.search(
         r'<script type="application/json" id="kernelData">(.*?)</script>', text, re.DOTALL

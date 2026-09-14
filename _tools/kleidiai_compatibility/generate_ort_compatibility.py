@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from datetime import date
 import os
 from pathlib import Path
 
@@ -60,15 +61,16 @@ def generate() -> tuple[str, dict[str, int]]:
         [report.ORT_ROOT / "onnxruntime" / "core" / "mlas" / "lib"],
         "ort",
     )
-    pr_audited_at = report.apply_pr_candidates(variants)
+    report.apply_pr_candidates(variants)
     variants = [variant for variant in variants if variant.isa != "NEON"]
     for variant in variants:
         variant.ort.available_primary = variant.relative_c in ort_pin.files
 
-    kai_revision = report.run_git(report.KAI_ROOT, "rev-parse", "HEAD")
-    kai_describe = report.describe_revision(report.KAI_ROOT)
-    ort_revision = report.run_git(report.ORT_ROOT, "rev-parse", "HEAD")
-    ort_release, ort_release_label = report.latest_stable_release(report.ORT_ROOT)
+    kai_release, _kai_release_label = report.latest_stable_release(report.KAI_ROOT)
+    ort_release, _ort_release_label = report.latest_stable_release(report.ORT_ROOT)
+    kai_revision = os.environ.get("KLEIDIAI_SOURCE_REF", kai_release)
+    ort_revision = os.environ.get("ONNXRUNTIME_SOURCE_REF", ort_release)
+    updated_at = date.today().isoformat()
 
     statuses = Counter(integration_status(variant)[0] for variant in variants)
     counts = {
@@ -83,17 +85,21 @@ def generate() -> tuple[str, dict[str, int]]:
     lines = [
         "<!-- SPDX-FileCopyrightText: Copyright 2026 Arm Limited and/or its affiliates <open-source-office@arm.com> -->",
         "",
-        "# KleidiAI compatibility in ONNX Runtime",
+        "# Arm KleidiAI compatibility in ONNX Runtime",
         "",
         (
-            "GitHub-native snapshot of public SVE- and SME-family KleidiAI "
-            "micro-kernels and their exact ONNX Runtime MLAS integration status."
+            "This page outlines support details for the "
+            "[Arm KleidiAI micro-kernel library]"
+            "(https://www.arm.com/markets/artificial-intelligence/software/kleidi). "
+            "Micro-kernels are integrated into ONNX Runtime via Microsoft Linear "
+            "Algebra Sub-Process (MLAS) to support CPU-Based inference acceleration "
+            "on Arm-Based CPUs."
         ),
         "",
-        f"- KleidiAI: [`{kai_describe}`]({report.KAI_GITHUB}/commit/{kai_revision})",
-        f"- ONNX Runtime: [`{ort_release_label}`]({report.ORT_GITHUB}/releases/tag/{ort_release})",
+        f"- KleidiAI tagged release: [`{kai_release}`]({report.KAI_GITHUB}/tree/{kai_release})",
+        f"- ONNX Runtime release: [`{ort_release}`]({report.ORT_GITHUB}/tree/{ort_release})",
         f"- ONNX Runtime KleidiAI pin: [`{ort_pin.label}`]({report.KAI_GITHUB}/tree/{ort_pin.revision})",
-        f"- Open pull requests audited: `{pr_audited_at}`",
+        f"- Last updated date: `{updated_at}`",
         "",
         "## Summary",
         "",
