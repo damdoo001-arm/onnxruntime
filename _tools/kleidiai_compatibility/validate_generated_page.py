@@ -145,6 +145,8 @@ def main() -> None:
     if '<td></td><td colspan=' in text or '<td colspan="6">' not in text:
         fail("expanded rows must span the full table width without indentation")
     depthwise = [record for record in records if record.get("operationKey") == "dwconv"]
+    if not all(isinstance(record.get("outputDetails"), list) for record in records):
+        fail("one or more kernels are missing output details")
     if not depthwise or not all(
         record.get("convKernelSize") != "—"
         and record.get("stride") != "—"
@@ -163,12 +165,15 @@ def main() -> None:
         "<th>Conv kernel size</th>" not in depthwise_html
         or "<th>Stride</th>" not in depthwise_html
         or "<th>Input path</th>" not in depthwise_html
+        or "<th>Conv Details</th>" not in depthwise_html
         or "<th>RHS Details</th>" not in depthwise_html
         or "<th>Tile</th>" in depthwise_html
     ):
         fail("depthwise detail columns must show geometry, input path, and RHS details")
-    if ">kernel</a>" not in text or ":'Packer'" not in text:
-        fail("expanded rows must use compact kernel and capitalized Packer link labels")
+    if ">Kernel</a>" not in text or ":'Packer'" not in text:
+        fail("expanded rows must use capitalized Kernel and Packer link labels")
+    if "<th>GEMM Details</th>" not in text or "computeDetails(kernel)" not in text:
+        fail("expanded rows must expose compute-kernel output details")
     if "<th>LHS Details</th>" not in text or "<th>RHS Details</th>" not in text:
         fail("expanded matmul rows must expose LHS and RHS details")
     if any("availability" in record for record in records):
