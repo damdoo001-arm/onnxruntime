@@ -1,9 +1,11 @@
+<!-- SPDX-FileCopyrightText: Copyright 2026 Arm Limited and/or its affiliates <open-source-office@arm.com> -->
+
 # KleidiAI compatibility in ONNX Runtime
 
 GitHub-native snapshot of public SVE- and SME-family KleidiAI micro-kernels and their exact ONNX Runtime MLAS integration status.
 
 - KleidiAI: [`v1.31.0-3-gc1c9e87`](https://github.com/ARM-software/kleidiai/commit/c1c9e8767b9a345f447e5608253a7597de84aef1)
-- ONNX Runtime: [`v1.30.0 + development`](https://github.com/microsoft/onnxruntime/releases/tag/v1.30.0)
+- ONNX Runtime: [`v1.29.0 + development`](https://github.com/microsoft/onnxruntime/releases/tag/v1.29.0)
 - ONNX Runtime KleidiAI pin: [`v1.20.0`](https://github.com/ARM-software/kleidiai/tree/v1.20.0)
 - Open pull requests audited: `2026-08-14`
 

@@ -22,12 +22,12 @@ def main() -> None:
     expected_front_matter = (
         "---\n"
         "layout: default\n"
-        "title: KleidiAI\n"
+        "title: Arm KleidiAI\n"
         "description: KleidiAI micro-kernel compatibility in ONNX Runtime\n"
         "parent: Performance\n"
     )
     if not text.startswith(expected_front_matter):
-        fail("page is not registered below Performance > KleidiAI")
+        fail("page is not registered below Performance > Arm KleidiAI")
     if "<!doctype" in text.lower() or "<html" in text.lower() or "<body" in text.lower():
         fail("Pages output must be a Jekyll content fragment, not a complete document")
     if re.search(r"__[A-Z][A-Z0-9_]*__", text):
@@ -100,6 +100,18 @@ def main() -> None:
         fail("one or more kernel records are missing RHS packer associations")
     if not any(record.get("rhsPacks") for record in records):
         fail("no RHS packer associations were discovered")
+    packers = [
+        packer
+        for record in records
+        for side in ("lhsPacks", "rhsPacks")
+        for packer in record.get(side, [])
+    ]
+    if not all(isinstance(packer.get("details"), list) for packer in packers):
+        fail("one or more packers are missing input/output details")
+    detail_values = {detail for packer in packers for detail in packer["details"]}
+    for expected in ("Signed", "Unsigned", "Symmetric", "Asymmetric"):
+        if not any(expected.lower() in detail.lower() for detail in detail_values):
+            fail(f"packer details do not expose {expected.lower()} data")
     rhs_orientations = {
         packer.get("orientation")
         for record in records
@@ -134,10 +146,13 @@ def main() -> None:
         fail("expanded rows must span the full table width without indentation")
     depthwise = [record for record in records if record.get("operationKey") == "dwconv"]
     if not depthwise or not all(
-        record.get("convKernelSize") != "—" and record.get("stride") != "—"
+        record.get("convKernelSize") != "—"
+        and record.get("stride") != "—"
+        and record.get("inputPath") in {"Indirect", "Planar"}
+        and record.get("rhsPacks")
         for record in depthwise
     ):
-        fail("depthwise kernels are missing convolution size or stride metadata")
+        fail("depthwise kernels are missing geometry, input path, or RHS details")
     depthwise_template = re.search(
         r"if\(isDepthwise\)return `(.*?)`;return `<table", text, re.DOTALL
     )
@@ -147,12 +162,15 @@ def main() -> None:
     if (
         "<th>Conv kernel size</th>" not in depthwise_html
         or "<th>Stride</th>" not in depthwise_html
+        or "<th>Input path</th>" not in depthwise_html
+        or "<th>RHS Details</th>" not in depthwise_html
         or "<th>Tile</th>" in depthwise_html
-        or "packer" in depthwise_html.lower()
     ):
-        fail("depthwise detail columns must show convolution size and stride, not tile or packers")
-    if '>kernel</a>' not in text or "'packer'" not in text:
-        fail("expanded rows must use compact kernel and packer link labels")
+        fail("depthwise detail columns must show geometry, input path, and RHS details")
+    if ">kernel</a>" not in text or ":'Packer'" not in text:
+        fail("expanded rows must use compact kernel and capitalized Packer link labels")
+    if "<th>LHS Details</th>" not in text or "<th>RHS Details</th>" not in text:
+        fail("expanded matmul rows must expose LHS and RHS details")
     if any("availability" in record for record in records):
         fail("removed pin-availability data is still embedded")
     packing_operations = {

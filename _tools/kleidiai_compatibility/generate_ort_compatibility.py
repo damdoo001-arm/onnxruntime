@@ -81,6 +81,8 @@ def generate() -> tuple[str, dict[str, int]]:
     }
 
     lines = [
+        "<!-- SPDX-FileCopyrightText: Copyright 2026 Arm Limited and/or its affiliates <open-source-office@arm.com> -->",
+        "",
         "# KleidiAI compatibility in ONNX Runtime",
         "",
         (

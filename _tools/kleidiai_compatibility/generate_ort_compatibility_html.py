@@ -215,9 +215,81 @@ def pack_orientation(variant: report.Variant) -> str | None:
     return None
 
 
+def descriptor_label(descriptor: report.Descriptor) -> str:
+    """Return a compact label for a packer input or output descriptor."""
+
+    if descriptor.base_type.startswith("x") and descriptor.base_type[1:].isdigit():
+        return f"{descriptor.base_type[1:]}-bit"
+    return descriptor.type_label
+
+
+def signedness(descriptor: report.Descriptor) -> str | None:
+    if descriptor.base_type.startswith("i"):
+        return "signed"
+    if descriptor.base_type.startswith("u"):
+        return "unsigned"
+    return None
+
+
+def quantization_mode(descriptor: report.Descriptor) -> str | None:
+    if descriptor.quantization == "qa":
+        return "asymmetric"
+    if descriptor.quantization == "qs":
+        return "symmetric"
+    return None
+
+
+def descriptor_details(descriptors: list[report.Descriptor]) -> list[str]:
+    """Summarize operand metadata when a kernel does not require a packer."""
+
+    details: list[str] = []
+    for descriptor in descriptors:
+        details.append(descriptor_label(descriptor))
+        for value in (signedness(descriptor), quantization_mode(descriptor)):
+            if value and value.capitalize() not in details:
+                details.append(value.capitalize())
+    return details
+
+
+def packer_details(variant: report.Variant) -> list[str]:
+    """Describe the input-to-packed-output transform encoded by a packer."""
+
+    if not variant.descriptors:
+        return []
+    output = variant.descriptors[0]
+    # The first descriptor after the packed output is the source operand;
+    # later descriptors describe auxiliary scale, bias, or accumulator data.
+    inputs = variant.descriptors[1:2]
+    details = []
+    if inputs:
+        source = " + ".join(descriptor_label(item) for item in inputs)
+        details.append(f"{source} → {descriptor_label(output)}")
+    else:
+        details.append(descriptor_label(output))
+
+    input_signedness = {value for item in inputs if (value := signedness(item))}
+    output_signedness = signedness(output)
+    if len(input_signedness) == 1 and output_signedness in input_signedness:
+        details.append(output_signedness.capitalize())
+    else:
+        details.extend(f"Input {value}" for value in sorted(input_signedness))
+        if output_signedness:
+            details.append(f"Output {output_signedness}")
+
+    input_modes = {value for item in inputs if (value := quantization_mode(item))}
+    output_mode = quantization_mode(output)
+    if len(input_modes) == 1 and output_mode in input_modes:
+        details.append(output_mode.capitalize())
+    else:
+        details.extend(f"Input {value}" for value in sorted(input_modes))
+        if output_mode:
+            details.append(f"Output {output_mode}")
+    return details
+
+
 def documented_packer_map(
     variants: list[report.Variant], revision: str
-) -> dict[str, dict[str, list[dict[str, str]]]]:
+) -> dict[str, dict[str, list[dict[str, object]]]]:
     """Read the exact compute-to-packer relationships published by KleidiAI."""
 
     compute_names = {variant.raw_name for variant in variants if variant.is_compute}
@@ -241,6 +313,7 @@ def documented_packer_map(
                 "name": name,
                 "url": f"{report.KAI_GITHUB}/blob/{revision}/{packer.relative_c}",
                 "orientation": pack_orientation(packer),
+                "details": packer_details(packer),
             }
             if item not in mapping[compute][side]:
                 mapping[compute][side].append(item)
@@ -251,6 +324,27 @@ def documented_packer_map(
             f"Packer table did not resolve associations for {len(missing)} compute kernels"
         )
     return mapping
+
+
+def documented_depthwise_paths(variants: list[report.Variant]) -> dict[str, str]:
+    """Read the planar/indirect distinction from KleidiAI's published table."""
+
+    depthwise_names = {
+        variant.raw_name for variant in variants if variant.operation_key == "dwconv"
+    }
+    paths: dict[str, str] = {}
+    for line in MICROKERNEL_TABLE.read_text(encoding="utf-8").splitlines():
+        name = next((item for item in depthwise_names if f"`{item}`" in line), None)
+        if name is None:
+            continue
+        if re.search(r"\bplanar\b", line, re.IGNORECASE):
+            paths[name] = "Planar"
+        elif re.search(r"\bindirect\b", line, re.IGNORECASE):
+            paths[name] = "Indirect"
+    missing = sorted(depthwise_names - paths.keys())
+    if missing:
+        report.fail(f"Depthwise input path is undocumented for: {', '.join(missing)}")
+    return paths
 
 
 def framework_operations(
@@ -405,6 +499,7 @@ def collect() -> tuple[list[dict[str, object]], dict[str, str]]:
     ort_revision = report.run_git(report.ORT_ROOT, "rev-parse", "HEAD")
     ort_release, ort_release_label = report.latest_stable_release(report.ORT_ROOT)
     packer_map = documented_packer_map(variants, kai_revision)
+    depthwise_paths = documented_depthwise_paths(variants)
     elastic_names = elastic_kernel_names()
     variants = [
         variant
@@ -414,6 +509,9 @@ def collect() -> tuple[list[dict[str, object]], dict[str, str]]:
     records = []
     for variant in variants:
         output, lhs, rhs = operand_datatypes(variant)
+        operands = variant.descriptors[1:]
+        lhs_descriptors = operands[:1]
+        rhs_descriptors = operands[1:]
         conv_kernel_size, stride = convolution_geometry(variant)
         tile, tile_source = effective_tile(variant)
         status_key, status_label = integration_status(variant)
@@ -436,6 +534,9 @@ def collect() -> tuple[list[dict[str, object]], dict[str, str]]:
                 "tileKind": tile_kind(variant, elastic_names),
                 "convKernelSize": conv_kernel_size,
                 "stride": stride,
+                "inputPath": depthwise_paths.get(variant.raw_name, "—"),
+                "lhsDetails": descriptor_details(lhs_descriptors),
+                "rhsDetails": descriptor_details(rhs_descriptors),
                 "lhsPacks": packer_map[variant.raw_name]["lhs"],
                 "rhsPacks": packer_map[variant.raw_name]["rhs"],
                 "status": status_key,
@@ -462,7 +563,7 @@ TEMPLATE = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="KleidiAI compatibility in ONNX Runtime"><title>KleidiAI compatibility in ONNX Runtime</title><style>__BASE_CSS__
 .controls{position:sticky;z-index:10;top:0;margin:14px 0;padding:14px;border:1px solid var(--line);border-radius:13px;background:color-mix(in srgb,var(--surface) 94%,transparent);backdrop-filter:blur(14px)}.search-row{display:grid;grid-template-columns:minmax(240px,1fr) auto;gap:9px}.clear{border:1px solid var(--line);border-radius:9px;background:var(--surface3);padding:8px 13px;cursor:pointer}.dropdown-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-top:9px}.filter-menu{position:relative;min-width:0}.filter-menu summary{display:flex;min-height:50px;flex-direction:column;justify-content:center;gap:2px;padding:7px 10px;border:1px solid var(--line);border-radius:9px;background:var(--surface2);cursor:pointer;list-style:none}.filter-menu summary::-webkit-details-marker{display:none}.filter-menu summary:after{content:"▾";position:absolute;right:10px;top:16px;color:var(--muted)}.filter-menu[open] summary{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}.filter-menu[open] summary:after{transform:rotate(180deg)}.filter-name{color:var(--muted);font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.07em}.filter-value{max-width:calc(100% - 20px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.checklist{position:absolute;z-index:30;top:calc(100% + 5px);left:0;width:max(100%,280px);max-height:330px;overflow:auto;padding:7px;border:1px solid var(--line);border-radius:10px;background:var(--surface2);box-shadow:0 18px 45px rgba(0,0,0,.32)}.filter-menu:nth-child(3n) .checklist{right:0;left:auto}.check-option{display:grid;grid-template-columns:16px minmax(0,1fr) auto;align-items:start;gap:8px;padding:7px;border-radius:7px;cursor:pointer}.check-option:hover{background:var(--surface3)}.check-option input{margin:3px 0 0;accent-color:var(--accent)}.check-option .count{color:var(--muted);font-size:11px}.active{display:flex;flex-wrap:wrap;gap:5px;margin-top:9px}.filter-chip{border:1px solid var(--line);border-radius:999px;background:var(--surface2);padding:4px 8px;cursor:pointer;font-size:11px}.results-head{display:flex;align-items:end;justify-content:space-between;gap:12px;margin:0 0 10px}.results-head h2{margin:0;font-size:17px}.main-table{width:100%;min-width:0;table-layout:fixed}.main-table .kai-toggle{width:3rem}.main-table .kai-datatype{width:15%}.main-table .kai-extension{width:14%}.main-table .kai-status{width:26%}.main-table>thead th{overflow-wrap:anywhere}.main-table>tbody>.group-row>td{padding:9px 8px}.main-table td:first-child,.main-table th:first-child{text-align:center}.operation-header th{padding:10px 12px;background:var(--surface3);color:var(--text);text-align:left}.operation-header span{margin-left:6px;color:var(--muted);font-size:11px;font-weight:400}.expand-row{border:0;background:transparent;color:var(--accent);cursor:pointer;font-size:14px}.detail-row>td{padding:0 8px 10px}.kernel-details{padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--surface2)}.kernel-details table{width:100%;margin:0;table-layout:fixed}.kernel-details th,.kernel-details td{padding:7px;text-align:left;overflow-wrap:anywhere}.kernel-details th:nth-child(1){width:18%}.kernel-details th:nth-child(2){width:28%}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.status{font-weight:700}.status-integrated{color:var(--green)}.status-referenced{color:#8ecbff}.status-pr{color:#c4b5fd}.status-not-integrated{color:var(--muted)}.links{display:flex;flex-wrap:wrap;gap:6px;margin-top:3px}@media(max-width:900px){.dropdown-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.filter-menu:nth-child(3n) .checklist{right:auto;left:0}.filter-menu:nth-child(2n) .checklist{right:0;left:auto}}@media(max-width:520px){.shell{width:min(100% - 16px,1600px);padding-top:8px}.controls{position:static}.search-row,.dropdown-grid{grid-template-columns:1fr}.filter-menu:nth-child(2n) .checklist{right:auto;left:0}.checklist{width:100%}}
-</style><style>.controls{padding:10px}.dropdown-grid{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}.filter-menu{flex:1 1 145px}.filter-menu summary{min-height:34px;flex-direction:row;align-items:center;justify-content:space-between;gap:6px;padding:5px 24px 5px 8px}.filter-menu summary:after{top:8px}.filter-value{font-size:11px;font-weight:600}.filter-menu .checklist{right:auto;left:0}.filter-menu:last-child .checklist{right:0;left:auto}.main-table{width:100%!important;max-width:100%!important;min-width:0!important;table-layout:fixed!important}.main-table>thead>tr>th:nth-child(1),.main-table>tbody>.group-row>td:nth-child(1){width:4%!important;text-align:center}.main-table>thead>tr>th:nth-child(n+2):nth-child(-n+4),.main-table>tbody>.group-row>td:nth-child(n+2):nth-child(-n+4){width:14%!important}.main-table>thead>tr>th:nth-child(5),.main-table>tbody>.group-row>td:nth-child(5){width:14%!important}.main-table>thead>tr>th:nth-child(6),.main-table>tbody>.group-row>td:nth-child(6){width:40%!important}.main-table>thead th,.main-table>tbody>.group-row>td{overflow-wrap:anywhere;word-break:break-word}.kernel-details table{width:100%!important;min-width:0!important;table-layout:fixed!important}.kernel-details th:nth-child(1){width:9%!important}.kernel-details th:nth-child(2){width:12%!important}.kernel-details th:nth-child(3),.kernel-details th:nth-child(4){width:19%!important}.kernel-details th:nth-child(5){width:41%!important}.kernel-details .depthwise-details th:nth-child(1){width:18%!important}.kernel-details .depthwise-details th:nth-child(2){width:10%!important}.kernel-details .depthwise-details th:nth-child(3){width:14%!important}.kernel-details .depthwise-details th:nth-child(4){width:58%!important}.kernel-details th,.kernel-details td{overflow-wrap:anywhere;word-break:break-word}.datatype{display:inline-block;padding:2px 5px;border-radius:5px}.type-output{color:#8ecbff;background:rgba(88,166,255,.12)}.type-lhs{color:#6ce8bb;background:rgba(108,232,187,.1)}.type-rhs{color:#c4b5fd;background:rgba(196,181,253,.1)}.extension-badge{color:#8ecbff}.status-partial{color:var(--amber)}.kernel-link{color:#8ecbff}.pack-links{display:flex;flex-wrap:wrap;gap:5px}.lhs-pack{color:#6ce8bb}.rhs-pack{color:#c4b5fd}.operator-links{display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin-top:4px;font-size:11px}.operator-links span{color:var(--muted)}.operator-links a{padding:1px 5px;border-radius:999px;background:rgba(88,166,255,.1)}@media(max-width:700px){.table-wrap{overflow-x:auto}.main-table{min-width:46rem!important}}</style></head><body><main class="shell"><header class="hero"><h1>KleidiAI compatibility in ONNX Runtime</h1><p class="lede">A focused compatibility view with grouped operations and multi-select requirement filters.</p><div class="meta"><span>KleidiAI <a href="__KAI_URL__"><code>__KAI_DESCRIBE__</code></a></span> · <span>ONNX Runtime <a href="__ORT_URL__"><code>__ORT_SHORT__</code></a></span> · <span>PR audit __AUDITED_AT__</span></div></header>
+</style><style>.controls{padding:10px}.dropdown-grid{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}.filter-menu{flex:1 1 145px}.filter-menu summary{min-height:34px;flex-direction:row;align-items:center;justify-content:space-between;gap:6px;padding:5px 24px 5px 8px}.filter-menu summary:after{top:8px}.filter-value{font-size:11px;font-weight:600}.filter-menu .checklist{right:auto;left:0}.filter-menu:last-child .checklist{right:0;left:auto}.main-table{width:100%!important;max-width:100%!important;min-width:0!important;table-layout:fixed!important}.main-table>thead>tr>th:nth-child(1),.main-table>tbody>.group-row>td:nth-child(1){width:4%!important;text-align:center}.main-table>thead>tr>th:nth-child(n+2):nth-child(-n+4),.main-table>tbody>.group-row>td:nth-child(n+2):nth-child(-n+4){width:14%!important}.main-table>thead>tr>th:nth-child(5),.main-table>tbody>.group-row>td:nth-child(5){width:14%!important}.main-table>thead>tr>th:nth-child(6),.main-table>tbody>.group-row>td:nth-child(6){width:40%!important}.main-table>thead th,.main-table>tbody>.group-row>td{overflow-wrap:anywhere;word-break:break-word}.kernel-details table{width:100%!important;min-width:0!important;table-layout:fixed!important}.kernel-details th:nth-child(1){width:9%!important}.kernel-details th:nth-child(2){width:12%!important}.kernel-details th:nth-child(3),.kernel-details th:nth-child(4){width:19%!important}.kernel-details th:nth-child(5){width:41%!important}.kernel-details .depthwise-details th:nth-child(1){width:12%!important}.kernel-details .depthwise-details th:nth-child(2){width:7%!important}.kernel-details .depthwise-details th:nth-child(3){width:10%!important}.kernel-details .depthwise-details th:nth-child(4){width:10%!important}.kernel-details .depthwise-details th:nth-child(5){width:23%!important}.kernel-details .depthwise-details th:nth-child(6){width:38%!important}.kernel-details th,.kernel-details td{overflow-wrap:anywhere;word-break:break-word}.datatype{display:inline-block;padding:2px 5px;border-radius:5px}.type-output{color:#8ecbff;background:rgba(88,166,255,.12)}.type-lhs{color:#6ce8bb;background:rgba(108,232,187,.1)}.type-rhs{color:#c4b5fd;background:rgba(196,181,253,.1)}.extension-badge{color:#8ecbff}.status-partial{color:var(--amber)}.kernel-link{color:#8ecbff}.pack-links{display:flex;flex-direction:column;align-items:flex-start;gap:5px}.pack-item{display:flex;flex-wrap:wrap;align-items:center;gap:4px}.input-details{display:inline-flex;flex-wrap:wrap;gap:3px}.detail-badge{display:inline-block;padding:1px 4px;border:1px solid var(--border);border-radius:999px;color:var(--muted);font-size:10px;line-height:1.35}.lhs-pack{color:#6ce8bb}.rhs-pack{color:#c4b5fd}.operator-links{display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin-top:4px;font-size:11px}.operator-links span{color:var(--muted)}.operator-links a{padding:1px 5px;border-radius:999px;background:rgba(88,166,255,.1)}@media(max-width:700px){.table-wrap{overflow-x:auto}.main-table{min-width:46rem!important}}</style></head><body><main class="shell"><header class="hero"><h1>KleidiAI compatibility in ONNX Runtime</h1><p class="lede">A focused compatibility view with grouped operations and multi-select requirement filters.</p><div class="meta"><span>KleidiAI <a href="__KAI_URL__"><code>__KAI_DESCRIBE__</code></a></span> · <span>ONNX Runtime <a href="__ORT_URL__"><code>__ORT_SHORT__</code></a></span> · <span>PR audit __AUDITED_AT__</span></div></header>
 <section class="controls" aria-label="Kernel filters"><div class="search-row"><input id="search" class="search" type="search" placeholder="Search operations, datatypes, or kernel symbols…"><button id="clear" class="clear" type="button">Clear</button></div><div id="dropdowns" class="dropdown-grid"></div><div id="activeFilters" class="active"></div></section><section class="results"><div class="results-head"><h2>Matching operations</h2><span id="resultCount" class="muted count" aria-live="polite"></span></div><div class="table-wrap"><table class="main-table"><thead><tr><th aria-label="Expand kernels"></th><th>Output datatype</th><th>LHS datatype</th><th>RHS datatype</th><th>Extension Type</th><th>ONNX Runtime</th></tr></thead><tbody id="results"></tbody></table><div id="empty" class="empty" hidden>No operations match these filters.</div></div></section></main>
 <script type="application/json" id="kernelData">__DATA__</script><script>
 (()=>{const data=JSON.parse(document.getElementById('kernelData').textContent);const defs=[['operation','Operation'],['output','Output'],['lhs','LHS'],['rhs','RHS'],['extension','Extension'],['tileKind','Tile mode'],['ortOps','ONNX operator'],['status','ORT status']];const labels={integrated:'Integrated',referenced:'Referenced only',pr:'PR available','not-integrated':'Not integrated'};const selected=Object.fromEntries(defs.map(([key])=>[key,new Set()]));const dropdowns=document.getElementById('dropdowns'),search=document.getElementById('search'),body=document.getElementById('results');const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const fieldValues=(record,key)=>{const value=record[key];if(!Array.isArray(value))return[value];return value.map(item=>typeof item==='object'?item.name:item)};const values=key=>[...new Set(data.flatMap(record=>fieldValues(record,key)).filter(value=>value&&value!=='—'))].sort((a,b)=>String(labels[a]||a).localeCompare(String(labels[b]||b)));
@@ -472,9 +573,10 @@ function renderActive(){const entries=defs.flatMap(([key,label])=>[...selected[k
 function groupRecords(records){const groups=new Map();for(const record of records){const key=[record.operation,record.output,record.lhs,record.rhs,record.extension].join('\u0000');if(!groups.has(key))groups.set(key,{operation:record.operation,operationKey:record.operationKey,output:record.output,lhs:record.lhs,rhs:record.rhs,extension:record.extension,kernels:[]});groups.get(key).kernels.push(record)}return [...groups.values()].sort((a,b)=>a.operation.localeCompare(b.operation)||a.output.localeCompare(b.output)||a.lhs.localeCompare(b.lhs)||a.rhs.localeCompare(b.rhs)||a.extension.localeCompare(b.extension))}
 function statusSummary(kernels){const counts=new Map();for(const kernel of kernels)counts.set(kernel.status,(counts.get(kernel.status)||0)+1);if(counts.size===1){const status=kernels[0].status;return `<span class="status status-${esc(status)}">${esc(labels[status]||kernels[0].statusLabel)}</span>`}const covered=kernels.filter(kernel=>kernel.status!=='not-integrated').length;return `<span class="status status-partial">${covered} of ${kernels.length} covered</span>`}
 function operationLinks(kernels){const items=new Map();kernels.flatMap(kernel=>kernel.ortOps).forEach(item=>items.set(item.name,item));return items.size?`<div class="operator-links"><span>Eligible ops:</span>${[...items.values()].map(item=>`<a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">${esc(item.name)}</a>`).join('')}</div>`:''}
-function packLinks(items,className,label){if(!items.length)return '<span class="muted">—</span>';const descriptions=items.map(item=>item.orientation?`${item.orientation} ${label}`:label);return `<div class="pack-links">${items.map((item,index)=>{const description=descriptions[index];const peers=descriptions.filter(value=>value===description);const position=descriptions.slice(0,index+1).filter(value=>value===description).length;return `<a class="${className}" href="${esc(item.url)}" title="${esc(item.name)}" target="_blank" rel="noopener noreferrer">${esc(description)}${peers.length>1?` ${position}`:''}</a>`}).join('')}</div>`}
+function detailBadges(items){if(!items||!items.length)return '';return `<span class="input-details">${items.map(item=>`<span class="detail-badge">${esc(item)}</span>`).join('')}</span>`}
+function packLinks(items,className,fallbackDetails=[]){if(!items.length)return `<div class="pack-item"><span class="muted">No Packer</span>${detailBadges(fallbackDetails)}</div>`;const descriptions=items.map(item=>item.orientation?`${item.orientation} Packer`:'Packer');return `<div class="pack-links">${items.map((item,index)=>{const description=descriptions[index];const peers=descriptions.filter(value=>value===description);const position=descriptions.slice(0,index+1).filter(value=>value===description).length;return `<div class="pack-item"><a class="${className}" href="${esc(item.url)}" title="${esc(item.name)}" target="_blank" rel="noopener noreferrer">${esc(description)}${peers.length>1?` ${position}`:''}</a>${detailBadges(item.details)}</div>`}).join('')}</div>`}
 function kernelStatus(kernel){return `<span class="status status-${esc(kernel.status)}">${esc(kernel.statusLabel)}</span>${operationLinks([kernel])}<div class="links">${kernel.evidence.length?kernel.evidence.map(item=>`<a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">${esc(item.label)}</a>`).join(''):'—'}</div>`}
-function detailTable(kernels,isDepthwise){if(isDepthwise)return `<table class="depthwise-details"><thead><tr><th>Conv kernel size</th><th>Stride</th><th>Kernel</th><th>ONNX Runtime</th></tr></thead><tbody>${kernels.map(kernel=>`<tr><td><span class="badge conv-size-badge">${esc(kernel.convKernelSize)}</span></td><td>${esc(kernel.stride)}</td><td><a class="kernel-link" href="${esc(kernel.source)}" title="${esc(kernel.name)}" target="_blank" rel="noopener noreferrer">kernel</a></td><td>${kernelStatus(kernel)}</td></tr>`).join('')}</tbody></table>`;return `<table><thead><tr><th>Tile</th><th>Kernel</th><th>LHS packer</th><th>RHS packer</th><th>ONNX Runtime</th></tr></thead><tbody>${kernels.map(kernel=>`<tr><td>${kernel.tile!=='—'?`<span class="badge tile-badge" title="Derived from ${esc(kernel.tileSource)}">${esc(kernel.tile)}</span>`:'—'}</td><td><a class="kernel-link" href="${esc(kernel.source)}" title="${esc(kernel.name)}" target="_blank" rel="noopener noreferrer">kernel</a></td><td>${packLinks(kernel.lhsPacks,'pack-link lhs-pack','packer')}</td><td>${packLinks(kernel.rhsPacks,'pack-link rhs-pack','packer')}</td><td>${kernelStatus(kernel)}</td></tr>`).join('')}</tbody></table>`}
+function detailTable(kernels,isDepthwise){if(isDepthwise)return `<table class="depthwise-details"><thead><tr><th>Conv kernel size</th><th>Stride</th><th>Input path</th><th>Kernel</th><th>RHS Details</th><th>ONNX Runtime</th></tr></thead><tbody>${kernels.map(kernel=>`<tr><td><span class="badge conv-size-badge">${esc(kernel.convKernelSize)}</span></td><td>${esc(kernel.stride)}</td><td><span class="detail-badge">${esc(kernel.inputPath)}</span></td><td><a class="kernel-link" href="${esc(kernel.source)}" title="${esc(kernel.name)}" target="_blank" rel="noopener noreferrer">kernel</a></td><td>${packLinks(kernel.rhsPacks,'pack-link rhs-pack',kernel.rhsDetails)}</td><td>${kernelStatus(kernel)}</td></tr>`).join('')}</tbody></table>`;return `<table><thead><tr><th>Tile</th><th>Kernel</th><th>LHS Details</th><th>RHS Details</th><th>ONNX Runtime</th></tr></thead><tbody>${kernels.map(kernel=>`<tr><td>${kernel.tile!=='—'?`<span class="badge tile-badge" title="Derived from ${esc(kernel.tileSource)}">${esc(kernel.tile)}</span>`:'—'}</td><td><a class="kernel-link" href="${esc(kernel.source)}" title="${esc(kernel.name)}" target="_blank" rel="noopener noreferrer">kernel</a></td><td>${packLinks(kernel.lhsPacks,'pack-link lhs-pack',kernel.lhsDetails)}</td><td>${packLinks(kernel.rhsPacks,'pack-link rhs-pack',kernel.rhsDetails)}</td><td>${kernelStatus(kernel)}</td></tr>`).join('')}</tbody></table>`}
 function renderResults(){const shown=data.filter(record=>matches(record));const groups=groupRecords(shown);const operations=new Map();for(const group of groups){if(!operations.has(group.operation))operations.set(group.operation,[]);operations.get(group.operation).push(group)}document.getElementById('resultCount').textContent=`${operations.size} operations · ${groups.length} variants · ${shown.length} kernels`;document.getElementById('empty').hidden=groups.length>0;let index=0;body.innerHTML=[...operations].map(([operation,variants])=>{const operationKernelCount=variants.reduce((count,variant)=>count+variant.kernels.length,0);return `<tr class="operation-header"><th colspan="6">${esc(operation)} <span>${variants.length} variant${variants.length===1?'':'s'} · ${operationKernelCount} kernel${operationKernelCount===1?'':'s'}</span></th></tr>${variants.map(group=>{const detailsId=`kernel-details-${index++}`;const kernels=[...group.kernels].sort((a,b)=>a.tile.localeCompare(b.tile)||a.name.localeCompare(b.name));return `<tr class="group-row"><td><button class="expand-row" type="button" aria-expanded="false" aria-controls="${detailsId}" title="Show ${kernels.length} kernels"><span aria-hidden="true">▶</span><span class="sr-only">Show kernels</span></button></td><td><code class="datatype type-output">${esc(group.output)}</code></td><td><code class="datatype type-lhs">${esc(group.lhs)}</code></td><td><code class="datatype type-rhs">${esc(group.rhs)}</code></td><td><span class="badge extension-badge">${esc(group.extension)}</span></td><td>${statusSummary(kernels)}${operationLinks(kernels)}</td></tr><tr id="${detailsId}" class="detail-row" hidden><td colspan="6"><div class="kernel-details">${detailTable(kernels,group.operationKey==='dwconv')}</div></td></tr>`}).join('')}`}).join('');body.querySelectorAll('.expand-row').forEach(button=>button.addEventListener('click',()=>{const expanded=button.getAttribute('aria-expanded')==='true';button.setAttribute('aria-expanded',String(!expanded));button.querySelector('[aria-hidden]').textContent=expanded?'▶':'▼';document.getElementById(button.getAttribute('aria-controls')).hidden=expanded}))}
 function render(openKey=''){renderResults();renderActive();renderDropdowns(openKey)}search.addEventListener('input',()=>render());document.getElementById('clear').addEventListener('click',()=>{Object.values(selected).forEach(set=>set.clear());search.value='';render()});document.addEventListener('click',event=>{if(!event.target.closest('.filter-menu'))dropdowns.querySelectorAll('details').forEach(detail=>detail.open=false)});document.addEventListener('keydown',event=>{if(event.key==='Escape'){const open=[...dropdowns.querySelectorAll('details')].find(detail=>detail.open);if(open){open.open=false;open.querySelector('summary').focus()}}});render()})();
 </script></body></html>'''
@@ -482,7 +584,7 @@ function render(openKey=''){renderResults();renderActive();renderDropdowns(openK
 
 PAGES_TEMPLATE = r'''---
 layout: default
-title: KleidiAI
+title: Arm KleidiAI
 description: KleidiAI micro-kernel compatibility in ONNX Runtime
 parent: Performance
 nav_order: 7
@@ -490,6 +592,7 @@ toc: false
 redirect_from:
   - /docs/reference/kleidiai/
 ---
+<!-- SPDX-FileCopyrightText: Copyright 2026 Arm Limited and/or its affiliates <open-source-office@arm.com> -->
 <div class="kleidiai-page">
   <h1>KleidiAI compatibility in ONNX Runtime</h1>
   <p class="kai-lede">Public SVE- and SME-family KleidiAI micro-kernels grouped by operation and their exact ONNX Runtime MLAS integration status.</p>
@@ -512,7 +615,7 @@ redirect_from:
 @media(max-width:50rem){.kleidiai-page .dropdown-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.kleidiai-page .filter-menu:nth-child(3n) .checklist{right:auto;left:0}.kleidiai-page .filter-menu:nth-child(2n) .checklist{right:0;left:auto}}@media(max-width:31.25rem){.kleidiai-page .search-row,.kleidiai-page .dropdown-grid{grid-template-columns:1fr}.kleidiai-page .filter-menu:nth-child(2n) .checklist{right:auto;left:0}.kleidiai-page .checklist{width:100%}}
 </style>
 <style>
-.kleidiai-page .kai-note{margin:.75rem 0;padding:.55rem .7rem;border-left:.18rem solid var(--kai-link);background:var(--kai-surface);color:var(--kai-muted);font-size:.75rem}.kleidiai-page .controls{padding:.65rem}.kleidiai-page .dropdown-grid{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.4rem}.kleidiai-page .filter-menu{flex:1 1 8.5rem}.kleidiai-page .filter-menu summary{min-height:2.15rem;flex-direction:row;align-items:center;justify-content:space-between;gap:.35rem;padding:.28rem 1.35rem .28rem .45rem}.kleidiai-page .filter-menu summary:after{right:.45rem;top:.48rem}.kleidiai-page .filter-name{font-size:.58rem}.kleidiai-page .filter-value{max-width:55%;font-size:.68rem}.kleidiai-page .filter-menu .checklist{right:auto;left:0}.kleidiai-page .filter-menu:last-child .checklist{right:0;left:auto}.kleidiai-page .table-wrap{overflow-x:hidden}.kleidiai-page .main-table{width:100%!important;max-width:100%!important;min-width:0!important;table-layout:fixed!important}.kleidiai-page .main-table>thead>tr>th:nth-child(1),.kleidiai-page .main-table>tbody>.group-row>td:nth-child(1){width:4%!important;text-align:center}.kleidiai-page .main-table>thead>tr>th:nth-child(n+2):nth-child(-n+4),.kleidiai-page .main-table>tbody>.group-row>td:nth-child(n+2):nth-child(-n+4){width:14%!important}.kleidiai-page .main-table>thead>tr>th:nth-child(5),.kleidiai-page .main-table>tbody>.group-row>td:nth-child(5){width:14%!important}.kleidiai-page .main-table>thead>tr>th:nth-child(6),.kleidiai-page .main-table>tbody>.group-row>td:nth-child(6){width:40%!important}.kleidiai-page .main-table>thead th,.kleidiai-page .main-table>tbody>.group-row>td{overflow-wrap:anywhere;word-break:break-word}.kleidiai-page .kernel-details table{width:100%!important;min-width:0!important;table-layout:fixed!important}.kleidiai-page .kernel-details th:nth-child(1){width:9%!important}.kleidiai-page .kernel-details th:nth-child(2){width:12%!important}.kleidiai-page .kernel-details th:nth-child(3),.kleidiai-page .kernel-details th:nth-child(4){width:19%!important}.kleidiai-page .kernel-details th:nth-child(5){width:41%!important}.kleidiai-page .kernel-details .depthwise-details th:nth-child(1){width:18%!important}.kleidiai-page .kernel-details .depthwise-details th:nth-child(2){width:10%!important}.kleidiai-page .kernel-details .depthwise-details th:nth-child(3){width:14%!important}.kleidiai-page .kernel-details .depthwise-details th:nth-child(4){width:58%!important}.kleidiai-page .kernel-details th,.kleidiai-page .kernel-details td{overflow-wrap:anywhere;word-break:break-word}.kleidiai-page .datatype{display:inline-block;padding:.08rem .28rem;border-radius:.25rem}.kleidiai-page .type-output{color:#1e5fb4;background:#edf5ff}.kleidiai-page .type-lhs{color:#13795b;background:#edf9f5}.kleidiai-page .type-rhs{color:#6f42c1;background:#f5f0ff}.kleidiai-page .extension-badge{color:#1e5fb4;background:#edf5ff}.kleidiai-page .status-partial{color:#8a5b00;background:#fff8e6}.kleidiai-page .kernel-link{color:#1e5fb4}.kleidiai-page .pack-links{display:flex;flex-wrap:wrap;gap:.3rem}.kleidiai-page .lhs-pack{color:#13795b}.kleidiai-page .rhs-pack{color:#6f42c1}.kleidiai-page .operator-links{display:flex;flex-wrap:wrap;align-items:center;gap:.25rem;margin-top:.2rem;font-size:.65rem}.kleidiai-page .operator-links span{color:var(--kai-muted)}.kleidiai-page .operator-links a{padding:.05rem .3rem;border-radius:999px;background:#edf5ff}@media(max-width:700px){.kleidiai-page .table-wrap{overflow-x:auto}.kleidiai-page .main-table{min-width:46rem!important}}
+.kleidiai-page .kai-note{margin:.75rem 0;padding:.55rem .7rem;border-left:.18rem solid var(--kai-link);background:var(--kai-surface);color:var(--kai-muted);font-size:.75rem}.kleidiai-page .controls{padding:.65rem}.kleidiai-page .dropdown-grid{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.4rem}.kleidiai-page .filter-menu{flex:1 1 8.5rem}.kleidiai-page .filter-menu summary{min-height:2.15rem;flex-direction:row;align-items:center;justify-content:space-between;gap:.35rem;padding:.28rem 1.35rem .28rem .45rem}.kleidiai-page .filter-menu summary:after{right:.45rem;top:.48rem}.kleidiai-page .filter-name{font-size:.58rem}.kleidiai-page .filter-value{max-width:55%;font-size:.68rem}.kleidiai-page .filter-menu .checklist{right:auto;left:0}.kleidiai-page .filter-menu:last-child .checklist{right:0;left:auto}.kleidiai-page .table-wrap{overflow-x:hidden}.kleidiai-page .main-table{width:100%!important;max-width:100%!important;min-width:0!important;table-layout:fixed!important}.kleidiai-page .main-table>thead>tr>th:nth-child(1),.kleidiai-page .main-table>tbody>.group-row>td:nth-child(1){width:4%!important;text-align:center}.kleidiai-page .main-table>thead>tr>th:nth-child(n+2):nth-child(-n+4),.kleidiai-page .main-table>tbody>.group-row>td:nth-child(n+2):nth-child(-n+4){width:14%!important}.kleidiai-page .main-table>thead>tr>th:nth-child(5),.kleidiai-page .main-table>tbody>.group-row>td:nth-child(5){width:14%!important}.kleidiai-page .main-table>thead>tr>th:nth-child(6),.kleidiai-page .main-table>tbody>.group-row>td:nth-child(6){width:40%!important}.kleidiai-page .main-table>thead th,.kleidiai-page .main-table>tbody>.group-row>td{overflow-wrap:anywhere;word-break:break-word}.kleidiai-page .kernel-details table{width:100%!important;min-width:0!important;table-layout:fixed!important}.kleidiai-page .kernel-details th:nth-child(1){width:9%!important}.kleidiai-page .kernel-details th:nth-child(2){width:12%!important}.kleidiai-page .kernel-details th:nth-child(3),.kleidiai-page .kernel-details th:nth-child(4){width:19%!important}.kleidiai-page .kernel-details th:nth-child(5){width:41%!important}.kleidiai-page .kernel-details .depthwise-details th:nth-child(1){width:12%!important}.kleidiai-page .kernel-details .depthwise-details th:nth-child(2){width:7%!important}.kleidiai-page .kernel-details .depthwise-details th:nth-child(3){width:10%!important}.kleidiai-page .kernel-details .depthwise-details th:nth-child(4){width:10%!important}.kleidiai-page .kernel-details .depthwise-details th:nth-child(5){width:23%!important}.kleidiai-page .kernel-details .depthwise-details th:nth-child(6){width:38%!important}.kleidiai-page .kernel-details th,.kleidiai-page .kernel-details td{overflow-wrap:anywhere;word-break:break-word}.kleidiai-page .datatype{display:inline-block;padding:.08rem .28rem;border-radius:.25rem}.kleidiai-page .type-output{color:#1e5fb4;background:#edf5ff}.kleidiai-page .type-lhs{color:#13795b;background:#edf9f5}.kleidiai-page .type-rhs{color:#6f42c1;background:#f5f0ff}.kleidiai-page .extension-badge{color:#1e5fb4;background:#edf5ff}.kleidiai-page .status-partial{color:#8a5b00;background:#fff8e6}.kleidiai-page .kernel-link{color:#1e5fb4}.kleidiai-page .pack-links{display:flex;flex-direction:column;align-items:flex-start;gap:.3rem}.kleidiai-page .pack-item{display:flex;flex-wrap:wrap;align-items:center;gap:.2rem}.kleidiai-page .input-details{display:inline-flex;flex-wrap:wrap;gap:.15rem}.kleidiai-page .detail-badge{display:inline-block;padding:.03rem .22rem;border:1px solid var(--kai-border);border-radius:999px;color:var(--kai-muted);font-size:.55rem;line-height:1.35}.kleidiai-page .lhs-pack{color:#13795b}.kleidiai-page .rhs-pack{color:#6f42c1}.kleidiai-page .operator-links{display:flex;flex-wrap:wrap;align-items:center;gap:.25rem;margin-top:.2rem;font-size:.65rem}.kleidiai-page .operator-links span{color:var(--kai-muted)}.kleidiai-page .operator-links a{padding:.05rem .3rem;border-radius:999px;background:#edf5ff}@media(max-width:700px){.kleidiai-page .table-wrap{overflow-x:auto}.kleidiai-page .main-table{min-width:46rem!important}}
 </style>
 __RUNTIME__
 '''
