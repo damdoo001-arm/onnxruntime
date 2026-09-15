@@ -22,23 +22,30 @@ def main() -> None:
     expected_front_matter = (
         "---\n"
         "layout: default\n"
-        "title: Arm KleidiAI\n"
-        "description: Arm KleidiAI micro-kernel compatibility in ONNX Runtime\n"
+        "title: Arm® KleidiAI™ software\n"
+        "description: Arm® KleidiAI™ software micro-kernel compatibility in ONNX Runtime\n"
         "parent: Performance\n"
     )
     if not text.startswith(expected_front_matter):
-        fail("page is not registered below Performance > Arm KleidiAI")
+        fail("page is not registered below Performance > Arm® KleidiAI™ software")
     if "<!doctype" in text.lower() or "<html" in text.lower() or "<body" in text.lower():
         fail("Pages output must be a Jekyll content fragment, not a complete document")
     if re.search(r"__[A-Z][A-Z0-9_]*__", text):
         fail("unresolved template placeholder")
-    if "<h1>Arm KleidiAI compatibility in ONNX Runtime</h1>" not in text:
-        fail("visible title does not identify Arm KleidiAI")
+    if "<h1>Arm® KleidiAI™ software compatibility in ONNX Runtime</h1>" not in text:
+        fail("visible title does not use the marked Arm® KleidiAI™ software name")
     if (
         '<a href="https://www.arm.com/markets/artificial-intelligence/software/kleidi">'
-        "Arm KleidiAI micro-kernel library</a>" not in text
+        "Arm KleidiAI software</a> micro-kernel library" not in text
     ):
         fail("introductory Arm KleidiAI library link is missing")
+    trademark_notice = (
+        "Arm, Kleidi, KleidiAI, KleidiCV and Kleidi Libraries are registered "
+        "trademarks or trademarks of Arm Limited (or its subsidiaries or affiliates) "
+        "in the US and/or elsewhere."
+    )
+    if trademark_notice not in text:
+        fail("Arm KleidiAI trademark notice is missing")
     kai_release = re.search(
         r"KleidiAI tagged release: <a href=\"https://github\.com/ARM-software/"
         r"kleidiai/tree/(?P<tag>v\d+\.\d+\.\d+)\"><code>(?P=tag)</code>",

@@ -1,4 +1,4 @@
-# KleidiAI compatibility page generator
+# Arm® KleidiAI™ software compatibility page generator
 
 This directory contains the self-contained Python generator used by the fork's
 Pages preview. The workflow checks out `microsoft/onnxruntime@gh-pages` as an
@@ -6,6 +6,10 @@ immutable website baseline, analyses the newest stable `vX.Y.Z` KleidiAI and
 ONNX Runtime tags, and writes the generated page into the runner's temporary
 baseline tree. It then uses the same Jekyll and Svelte stages as the ONNX
 Runtime publishing workflow and deploys only to this fork's Pages site.
+
+Arm, Kleidi, KleidiAI, KleidiCV and Kleidi Libraries are registered trademarks
+or trademarks of Arm Limited (or its subsidiaries or affiliates) in the US
+and/or elsewhere.
 
 The workflow has a hard guard for `damdoo001-arm/onnxruntime`, uses read-only
 source checkouts without persisted credentials, and has no repository-content

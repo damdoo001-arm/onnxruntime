@@ -85,15 +85,22 @@ def generate() -> tuple[str, dict[str, int]]:
     lines = [
         "<!-- SPDX-FileCopyrightText: Copyright 2026 Arm Limited and/or its affiliates <open-source-office@arm.com> -->",
         "",
-        "# Arm KleidiAI compatibility in ONNX Runtime",
+        "# Arm® KleidiAI™ software compatibility in ONNX Runtime",
         "",
         (
             "This page outlines support details for the "
-            "[Arm KleidiAI micro-kernel library]"
-            "(https://www.arm.com/markets/artificial-intelligence/software/kleidi). "
+            "[Arm KleidiAI software]"
+            "(https://www.arm.com/markets/artificial-intelligence/software/kleidi) "
+            "micro-kernel library. "
             "Micro-kernels are integrated into ONNX Runtime via Microsoft Linear "
             "Algebra Sub-Process (MLAS) to support CPU-Based inference acceleration "
             "on Arm-Based CPUs."
+        ),
+        "",
+        (
+            "Arm, Kleidi, KleidiAI, KleidiCV and Kleidi Libraries are registered "
+            "trademarks or trademarks of Arm Limited (or its subsidiaries or "
+            "affiliates) in the US and/or elsewhere."
         ),
         "",
         f"- KleidiAI tagged release: [`{kai_release}`]({report.KAI_GITHUB}/tree/{kai_release})",
